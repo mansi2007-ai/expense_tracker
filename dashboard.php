@@ -2,771 +2,1866 @@
 session_start();
 include 'db.php';
 
+// ======================================
+// LOGIN CHECK
+// ======================================
+
 if (!isset($_SESSION['user_id'])) {
-    header('Location: login.php');
+    header("Location: login.php");
     exit();
 }
 
 $user_id = $_SESSION['user_id'];
-$fullname = $_SESSION['fullname'];
 
-// ===== TOTALS =====
-$income_q = $conn->query("SELECT COALESCE(SUM(amount),0) total FROM income WHERE user_id=$user_id");
-$total_income = $income_q->fetch_assoc()['total'];
 
-$expense_q = $conn->query("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE user_id=$user_id");
-$total_expense = $expense_q->fetch_assoc()['total'];
+// ======================================
+// USER DETAILS
+// ======================================
+
+$stmt = $conn->prepare("
+SELECT fullname,email,profile_image
+FROM users
+WHERE user_id=?
+");
+
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
+
+$user = $stmt->get_result()->fetch_assoc();
+
+$stmt->close();
+
+$fullname = $user['fullname'];
+$email = $user['email'];
+$profile_image = !empty($user['profile_image'])
+    ? $user['profile_image']
+    : "default.png";
+
+
+// ======================================
+// TOTAL INCOME
+// ======================================
+
+$stmt = $conn->prepare("
+SELECT COALESCE(SUM(amount),0)
+FROM income
+WHERE user_id=?
+");
+
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
+$stmt->bind_result($total_income);
+$stmt->fetch();
+$stmt->close();
+
+
+// ======================================
+// TOTAL EXPENSE
+// ======================================
+
+$stmt = $conn->prepare("
+SELECT COALESCE(SUM(amount),0)
+FROM expenses
+WHERE user_id=?
+");
+
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
+$stmt->bind_result($total_expense);
+$stmt->fetch();
+$stmt->close();
+
+
+// ======================================
+// TOTAL SAVINGS
+// ======================================
+
+$stmt = $conn->prepare("
+SELECT COALESCE(SUM(saved_amount),0)
+FROM savings
+WHERE user_id=?
+");
+
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
+$stmt->bind_result($total_savings);
+$stmt->fetch();
+$stmt->close();
+
+
+// ======================================
+// NET BALANCE
+// ======================================
 
 $balance = $total_income - $total_expense;
 
-// ===== CURRENT MONTH =====
-$month_income_q = $conn->query("
-    SELECT COALESCE(SUM(amount),0) total
-    FROM income
-    WHERE user_id=$user_id
-      AND MONTH(income_date)=MONTH(CURDATE())
-      AND YEAR(income_date)=YEAR(CURDATE())
-");
-$current_month_income = $month_income_q->fetch_assoc()['total'];
 
-$month_exp_q = $conn->query("
-    SELECT COALESCE(SUM(amount),0) total
-    FROM expenses
-    WHERE user_id=$user_id
-      AND MONTH(expense_date)=MONTH(CURDATE())
-      AND YEAR(expense_date)=YEAR(CURDATE())
-");
-$current_month_expense = $month_exp_q->fetch_assoc()['total'];
+// ======================================
+// MONTHLY INCOME
+// ======================================
 
-// ===== BUDGET =====
-$budget_q = $conn->query("
- SELECT COALESCE(MAX(budget_amount),50000) AS budget
-FROM budgets
-WHERE user_id=$user_id "); // Semicolon added!
-$budget_amount = $budget_q->fetch_assoc()['budget'];
-$budget_percent = ($budget_amount > 0)
-    ? min(100, ($current_month_expense / $budget_amount) * 100)
-    : 0;
-
-// ===== SAVINGS =====
-$savings_rate = ($total_income > 0)
-    ? round(($balance / $total_income) * 100)
-    : 0;
-
-// ===== CATEGORY DATA =====
-$cat_q = $conn->query("
-    SELECT c.category_name, SUM(e.amount) AS total
-    FROM expenses e
-    JOIN categories c ON e.category_id=c.category_id
-    WHERE e.user_id=$user_id
-    GROUP BY c.category_name
-    ORDER BY total DESC
+$stmt = $conn->prepare("
+SELECT COALESCE(SUM(amount),0)
+FROM income
+WHERE user_id=?
+AND MONTH(income_date)=MONTH(CURDATE())
+AND YEAR(income_date)=YEAR(CURDATE())
 ");
 
-$cat_labels = [];
-$cat_values = [];
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
+$stmt->bind_result($monthly_income);
+$stmt->fetch();
+$stmt->close();
 
-while($row = $cat_q->fetch_assoc()){
-    $cat_labels[] = $row['category_name'];
-    $cat_values[] = $row['total'];
+
+// ======================================
+// MONTHLY EXPENSE
+// ======================================
+
+$stmt = $conn->prepare("
+SELECT COALESCE(SUM(amount),0)
+FROM expenses
+WHERE user_id=?
+AND MONTH(expense_date)=MONTH(CURDATE())
+AND YEAR(expense_date)=YEAR(CURDATE())
+");
+
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
+$stmt->bind_result($monthly_expense);
+$stmt->fetch();
+$stmt->close();
+
+
+// ======================================
+// RECENT INCOME
+// ======================================
+
+$income_sql = "
+SELECT
+'Income' AS type,
+amount,
+source AS category,
+description,
+income_date AS trans_date
+FROM income
+WHERE user_id=$user_id
+";
+
+// ======================================
+// RECENT EXPENSE
+// ======================================
+
+$expense_sql = "
+SELECT
+'Expense' AS type,
+amount,
+category,
+description,
+expense_date AS trans_date
+FROM expenses
+WHERE user_id=$user_id
+";
+
+
+// ======================================
+// COMBINED TRANSACTIONS
+// ======================================
+
+$recent_transactions = $conn->query("
+($income_sql)
+
+UNION ALL
+
+($expense_sql)
+
+ORDER BY trans_date DESC
+
+LIMIT 8
+");
+
+
+// ======================================
+// EXPENSE CATEGORY DATA
+// ======================================
+
+$category_result = $conn->query("
+SELECT
+category,
+SUM(amount) total
+FROM expenses
+WHERE user_id=$user_id
+GROUP BY category
+");
+
+$category_labels = [];
+$category_amounts = [];
+
+while($row = $category_result->fetch_assoc()){
+
+    $category_labels[] = $row['category'];
+    $category_amounts[] = $row['total'];
+
 }
 
-// ===== RECENT TRANSACTIONS =====
-$recent = $conn->query("
-    SELECT e.amount, e.description, e.expense_date, c.category_name
-    FROM expenses e
-    JOIN categories c ON e.category_id=c.category_id
-    WHERE e.user_id=$user_id
-    ORDER BY e.expense_date DESC, e.expense_id DESC
-    LIMIT 6
-");
 
-// ===== NOTIFICATIONS =====
-$notifications = [
-    ['title'=>'Budget Exceeded','message'=>'Your expenses exceeded the monthly budget.','type'=>'danger','time'=>'10:42 AM'],
-    ['title'=>'Low Balance','message'=>'Your balance is below ₹5,000.','type'=>'warning','time'=>'10:30 AM'],
-    ['title'=>'Expense Added','message'=>'Grocery expense added successfully.','type'=>'success','time'=>'09:15 AM']
-];
-$unread_count = count($notifications);
+// ======================================
+// CHART DATA
+// ======================================
+
+$chart_income = $monthly_income;
+$chart_expense = $monthly_expense;
+$chart_balance = $balance;
+
 ?>
-
 <!DOCTYPE html>
-
 <html lang="en">
+
 <head>
+
 <meta charset="UTF-8">
+
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dashboard - ExpenseTracker</title>
+
+<title>Finora • Dashboard</title>
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
 <style>
-:root{
-    --bg:#0b1020;
-    --panel:#121933cc;
-    --line:#2a3566;
-    --text:#eef2ff;
-    --muted:#a5b4fc;
-    --blue:#5b8cff;
-    --green:#22c55e;
-    --red:#ef4444;
-    --yellow:#f59e0b;
-    --cyan:#06b6d4;
+
+*{
+margin:0;
+padding:0;
+box-sizing:border-box;
 }
 
 body{
-    background: radial-gradient(circle at top left,#1d4ed8 0%,#0b1020 35%,#070b16 100%);
-    color:var(--text);
-    font-family:'Segoe UI',sans-serif;
-    min-height:100vh;
+
+font-family:'Poppins',sans-serif;
+
+background:
+radial-gradient(circle at top left,#312e81 0%,transparent 30%),
+radial-gradient(circle at bottom right,#7c3aed 0%,transparent 35%),
+#0b1020;
+
+color:#fff;
+
+overflow-x:hidden;
+
 }
+
+/* ================= Sidebar ================= */
 
 .sidebar{
-    width:250px;
-    min-height:100vh;
-    position:fixed;
-    background:#0f172acc;
-    backdrop-filter: blur(18px);
-    border-right:1px solid var(--line);
-    z-index:1000;
+
+position:fixed;
+
+top:0;
+
+left:0;
+
+width:270px;
+
+height:100vh;
+
+background:rgba(18,25,51,.85);
+
+backdrop-filter:blur(20px);
+
+border-right:1px solid rgba(255,255,255,.08);
+
+padding:25px;
+
+z-index:1000;
+
 }
 
-.sidebar .brand{
-    padding:24px 20px;
-    font-size:24px;
-    font-weight:700;
+.profile-box{
+
+text-align:center;
+
+padding-bottom:25px;
+
+border-bottom:1px solid rgba(255,255,255,.08);
+
+margin-bottom:25px;
+
 }
 
-.sidebar a{
-    color:#c7d2fe;
-    text-decoration:none;
-    display:block;
-    padding:12px 18px;
-    margin:6px 12px;
-    border-radius:14px;
-    transition:.2s ease;
+.profile-box img{
+
+width:90px;
+
+height:90px;
+
+border-radius:50%;
+
+object-fit:cover;
+
+border:4px solid #f59e0b;
+
 }
 
-.sidebar a:hover,
-.sidebar a.active{
-    background:linear-gradient(135deg,#2563eb,#3b82f6);
-    color:white;
-    transform:translateX(4px);
+.profile-box h5{
+
+margin-top:15px;
+
+margin-bottom:4px;
+
+font-weight:600;
+
 }
 
-.main{ margin-left:250px; }
+.profile-box small{
+
+color:#94a3b8;
+
+}
+
+.menu a{
+
+display:flex;
+
+align-items:center;
+
+gap:12px;
+
+text-decoration:none;
+
+color:#fff;
+
+padding:13px 16px;
+
+border-radius:14px;
+
+margin-bottom:10px;
+
+transition:.3s;
+
+font-weight:500;
+
+}
+
+.menu a:hover{
+
+background:#7c3aed;
+
+transform:translateX(5px);
+
+}
+
+.menu a.active{
+
+background:#f59e0b;
+
+color:#111827;
+
+font-weight:600;
+
+}
+
+/* ================= Main ================= */
+
+.main{
+
+margin-left:270px;
+
+padding:30px;
+
+}
+
+/* ================= Navbar ================= */
 
 .topbar{
-    position:sticky;
-    top:0;
-    z-index:2000;
-    background:#0f172acc;
-    backdrop-filter: blur(16px);
-    border-bottom:1px solid var(--line);
-    padding:16px 24px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:30px;
+}
+
+.top-right{
+    display:flex;
+    align-items:center;
+    gap:20px;
+}
+.notification{
+
+font-size:22px;
+
+cursor:pointer;
+
+}
+
+.user-link{
+
+display:flex;
+
+align-items:center;
+
+text-decoration:none;
+
+color:#fff;
+
+gap:12px;
+
+}
+
+.user-link img{
+
+width:45px;
+
+height:45px;
+
+border-radius:50%;
+
+object-fit:cover;
+
+border:2px solid #f59e0b;
+
 }
 
 .glass{
-    background:var(--panel);
-    border:1px solid rgba(255,255,255,.08);
-    backdrop-filter: blur(16px);
-    border-radius:26px;
-    box-shadow:0 12px 40px rgba(0,0,0,.28);
+
+background:rgba(18,25,51,.75);
+
+backdrop-filter:blur(16px);
+
+border:1px solid rgba(255,255,255,.08);
+
+border-radius:20px;
+
+box-shadow:0 20px 40px rgba(0,0,0,.30);
+
 }
 
-.kpi{
-    padding:22px;
-    min-height:150px;
-    position:relative;
-    overflow:hidden;
-    transition:transform .25s ease;
+/* ================= Mobile ================= */
+
+@media(max-width:992px){
+
+.sidebar{
+
+left:-270px;
+
+transition:.4s;
+
 }
 
-.kpi:hover{ transform:translateY(-6px); }
+.sidebar.active{
 
-.kpi .icon{
-    position:absolute;
-    right:18px;
-    top:18px;
-    font-size:42px;
-    opacity:.18;
+left:0;
+
 }
 
-.income{ background:linear-gradient(135deg,#0f5132,#16a34a); }
-.expense{ background:linear-gradient(135deg,#7f1d1d,#dc2626); }
-.balance{ background:linear-gradient(135deg,#1e3a8a,#2563eb); }
-.budget{ background:linear-gradient(135deg,#78350f,#f59e0b); }
+.main{
 
-.ring-wrap{
-    width:170px;height:170px;
-    position:relative;margin:auto;
+margin-left:0;
+
 }
 
-.ring{
-    width:170px;height:170px;border-radius:50%;
-    background:conic-gradient(var(--green) calc(var(--p)*1%), rgba(255,255,255,.08) 0);
-    display:grid;place-items:center;
 }
 
-.ring::before{
-    content:'';
-    width:128px;height:128px;border-radius:50%;
-    background:#0f172a;border:1px solid var(--line);
-}
-
-.ring-center{
-    position:absolute; inset:0;
-    display:grid; place-items:center;
-    text-align:center;
-}
-
-.heatmap{
-    display:grid;
-    grid-template-columns: repeat(7,1fr);
-    gap:8px;
-}
-
-.heat{
-    height:34px;
-    border-radius:10px;
-    background:#1f2937;
-}
-
-.heat.l1{ background:#123a5a; }
-.heat.l2{ background:#155e75; }
-.heat.l3{ background:#0ea5a4; }
-.heat.l4{ background:#22c55e; }
-
-.dropdown-menu.glass{
-    background:#121933ee !important;
-    border:1px solid rgba(255,255,255,.08) !important;
-    backdrop-filter: blur(16px);
-    border-radius:20px;
-    box-shadow:0 18px 50px rgba(0,0,0,.35);
-    z-index:3000 !important;
-}
-
-.dropdown-menu .dropdown-item{
-    color:white;
-    transition:all .2s ease;
-}
-
-.dropdown-menu .dropdown-item:hover{
-    background:rgba(59,130,246,.12) !important;
-    transform:translateX(4px);
-}
-
-.table-darkish{
-    --bs-table-bg: transparent;
-    --bs-table-color: var(--text);
-    --bs-table-border-color: #243056;
-    --bs-table-striped-bg: rgba(255,255,255,.03);
-    --bs-table-hover-bg: rgba(255,255,255,.05);
-}
-
-@media (max-width: 992px){
-    .sidebar{ position:relative; width:100%; min-height:auto; }
-    .main{ margin-left:0; }
-}
 </style>
-
 </head>
+
 <body>
 
-<!-- SIDEBAR -->
+<!-- ================= Sidebar ================= -->
 
-<div class="sidebar">
-    <div class="brand"><i class="bi bi-wallet2 me-2"></i>Finora</div>
+<div class="sidebar" id="sidebar">
 
-```
-<a href="dashboard.php" class="active"><i class="bi bi-speedometer2 me-2"></i>Dashboard</a>
-<a href="add_income.php"><i class="bi bi-plus-circle me-2"></i>Add Income</a>
-<a href="add_expense.php"><i class="bi bi-dash-circle me-2"></i>Add Expense</a>
-<a href="savings.php" class="nav-link text-white"> <i class="bi bi-piggy-bank me-2"></i>Savings</a>
-<a href="transactions.php"><i class="bi bi-arrow-left-right me-2"></i>Transactions</a>
-<a href="reports.php"><i class="bi bi-bar-chart me-2"></i>Reports</a>
-<a href="logout.php" class="text-danger"><i class="bi bi-box-arrow-right me-2"></i>Logout</a>
-```
+<div class="profile-box">
+
+<img
+src="uploads/profile/<?= htmlspecialchars($profile_image) ?>"
+alt="Profile">
+
+<h5><?= htmlspecialchars($fullname) ?></h5>
+
+<small><?= htmlspecialchars($email) ?></small>
 
 </div>
 
-<!-- MAIN -->
+<div class="menu">
+
+<a href="dashboard.php" class="active">
+<i class="bi bi-grid-fill"></i>
+Dashboard
+</a>
+
+<a href="add_income.php">
+<i class="bi bi-cash-stack"></i>
+Income
+</a>
+
+<a href="add_expense.php">
+<i class="bi bi-wallet2"></i>
+Expenses
+</a>
+
+<a href="transactions.php">
+    <i class="bi bi-arrow-left-right"></i>
+    Transactions
+</a>
+
+<a href="savings.php">
+<i class="bi bi-piggy-bank-fill"></i>
+Savings
+</a>
+
+<a href="reports.php">
+<i class="bi bi-bar-chart-fill"></i>
+Reports
+</a>
+
+<a href="profile.php">
+<i class="bi bi-person-circle"></i>
+Profile
+</a>
+
+<a href="settings.php">
+<i class="bi bi-gear-fill"></i>
+Settings
+</a>
+
+<a href="logout.php">
+<i class="bi bi-box-arrow-right"></i>
+Logout
+</a>
+
+</div>
+
+</div>
+
+<!-- ================= Main ================= -->
 
 <div class="main">
 
-```
-<!-- TOPBAR -->
-<div class="topbar d-flex justify-content-between align-items-center">
+<!-- ================= Topbar ================= -->
 
-    <div>
-        <h3 class="mb-0">Dashboard</h3>
-        <small class="text-secondary">Welcome back, <?php echo htmlspecialchars($fullname); ?> 👋</small>
-    </div>
+<<div class="topbar">
 
+    <!-- Left Side -->
     <div class="d-flex align-items-center gap-3">
 
-        <!-- NOTIFICATIONS -->
-        <div class="dropdown">
-            <button class="btn btn-dark position-relative border border-secondary" data-bs-toggle="dropdown">
-                <i class="bi bi-bell fs-5"></i>
+        <button
+            class="btn btn-warning d-lg-none"
+            onclick="document.getElementById('sidebar').classList.toggle('active')">
 
-                <span id="notifCount" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">
-                    <?php echo $unread_count; ?>
-                </span>
-            </button>
+            <i class="bi bi-list"></i>
 
-            <div class="dropdown-menu dropdown-menu-end glass p-0" style="width:340px;">
-                <div class="d-flex justify-content-between align-items-center px-3 py-3 border-bottom border-secondary">
-                    <h6 class="mb-0 text-white">Notifications</h6>
-                    <small id="unreadText" class="text-secondary"><?php echo $unread_count; ?> unread</small>
-                </div>
+        </button>
 
-                <div id="notifList">
-                    <?php foreach($notifications as $n): ?>
-                    <div class="dropdown-item px-3 py-3 border-bottom border-secondary">
-                        <div class="d-flex align-items-start gap-3">
-                            <i class="bi bi-info-circle text-info fs-5 mt-1"></i>
+        <div>
 
-                            <div class="flex-grow-1">
-                                <div class="d-flex justify-content-between align-items-start">
-                                    <strong><?php echo $n['title']; ?></strong>
-                                    <span class="badge bg-primary new-badge">New</span>
-                                </div>
+            <h2 class="fw-bold mb-1">Dashboard</h2>
 
-                                <div class="small text-secondary mt-1"><?php echo $n['message']; ?></div>
-                                <div class="small text-secondary mt-2">
-                                    <i class="bi bi-clock me-1"></i><?php echo $n['time']; ?>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <?php endforeach; ?>
-                </div>
+            <p class="text-secondary mb-0">
+                Welcome back,
+                <strong><?= htmlspecialchars($fullname) ?></strong>
+            </p>
 
-                <div class="p-3 border-top border-secondary">
-                    <button class="btn btn-outline-light btn-sm w-100" onclick="markAllRead()">
-                        <i class="bi bi-check2-all me-1"></i>Mark all as read
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- PROFILE -->
-        <div class="dropdown">
-            <button class="btn btn-dark border border-secondary d-flex align-items-center gap-2 px-2 py-1" data-bs-toggle="dropdown">
-                <img src="https://ui-avatars.com/api/?name=<?php echo urlencode($fullname); ?>&background=2563eb&color=fff"
-                     width="38" height="38" class="rounded-circle border border-secondary">
-
-                <span class="fw-semibold d-none d-md-inline text-white"><?php echo htmlspecialchars($fullname); ?></span>
-                <i class="bi bi-chevron-down text-secondary small"></i>
-            </button>
-
-            <ul class="dropdown-menu dropdown-menu-end glass border-0 shadow-lg mt-2" style="min-width:240px;">
-                <li><a class="dropdown-item py-2" href="profile.php"><i class="bi bi-person me-2 text-info"></i>My Profile</a></li>
-                <li><a class="dropdown-item py-2" href="settings.php"><i class="bi bi-gear me-2 text-warning"></i>Settings</a></li>
-                <li><a class="dropdown-item py-2" href="reports.php"><i class="bi bi-bar-chart me-2 text-success"></i>Reports</a></li>
-                <li><hr class="dropdown-divider border-secondary"></li>
-                <li class="px-3 py-2">
-                    <a class="btn btn-outline-danger w-100" href="logout.php">
-                        <i class="bi bi-box-arrow-right me-2"></i>Logout
-                    </a>
-                </li>
-            </ul>
-        </div>
-
-    </div>
-</div>
-
-<!-- CONTENT -->
-<div class="container-fluid p-4">
-
-    <!-- QUICK ACTIONS -->
-    <div class="glass p-4 mb-4">
-        <div class="row g-3">
-            <div class="col-md-3 d-grid">
-                <a href="add_income.php" class="btn btn-success btn-lg">
-                    <i class="bi bi-plus-circle me-2"></i>Add Income
-                </a>
-            </div>
-
-            <div class="col-md-3 d-grid">
-                <a href="add_expense.php" class="btn btn-danger btn-lg">
-                    <i class="bi bi-dash-circle me-2"></i>Add Expense
-                </a>
-            </div>
-
-            <div class="col-md-3 d-grid">
-                <a href="transactions.php" class="btn btn-primary btn-lg">
-                    <i class="bi bi-arrow-left-right me-2"></i>Transactions
-                </a>
-            </div>
-
-            <div class="col-md-3 d-grid">
-                <a href="reports.php" class="btn btn-warning btn-lg text-dark">
-                    <i class="bi bi-bar-chart me-2"></i>Reports
-                </a>
-            </div>
-        </div>
-    </div>
-
-    <!-- KPI CARDS -->
-    <div class="row g-4 mb-4">
-
-        <div class="col-lg-3 col-md-6">
-            <div class="glass kpi income">
-                <i class="bi bi-arrow-down-left-circle icon"></i>
-                <div class="text-white-50">Total Income</div>
-                <h2 class="fw-bold mt-2">₹ <?php echo number_format($total_income,2); ?></h2>
-                <small class="text-white-50">All income sources</small>
-            </div>
-        </div>
-
-        <div class="col-lg-3 col-md-6">
-            <div class="glass kpi expense">
-                <i class="bi bi-arrow-up-right-circle icon"></i>
-                <div class="text-white-50">Total Expenses</div>
-                <h2 class="fw-bold mt-2">₹ <?php echo number_format($total_expense,2); ?></h2>
-                <small class="text-white-50">Operational spending</small>
-            </div>
-        </div>
-
-        <div class="col-lg-3 col-md-6">
-            <div class="glass kpi balance">
-                <i class="bi bi-wallet2 icon"></i>
-                <div class="text-white-50">Net Balance</div>
-                <h2 class="fw-bold mt-2">₹ <?php echo number_format($balance,2); ?></h2>
-                <small class="text-white-50">Income minus expenses</small>
-            </div>
-        </div>
-
-        <div class="col-lg-3 col-md-6">
-            <div class="glass kpi budget">
-                <i class="bi bi-pie-chart icon"></i>
-                <div class="text-white-50">Budget Used</div>
-                <h2 class="fw-bold mt-2"><?php echo round($budget_percent); ?>%</h2>
-
-                <div class="progress mt-3" style="height:10px;">
-                    <div class="progress-bar bg-light" style="width:<?php echo $budget_percent; ?>%"></div>
-                </div>
-            </div>
         </div>
 
     </div>
 
-    <!-- CHARTS -->
-    <div class="row g-4 mb-4">
+    <!-- Right Side -->
+    <div class="d-flex align-items-center gap-4">
 
-        <div class="col-xl-8">
-            <div class="glass p-4 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
-                        <h5 class="mb-0">Income vs Expenses</h5>
-                        <small class="text-secondary">Monthly cash flow trend</small>
-                    </div>
-                </div>
+        <!-- Notification -->
+        <a href="notification.php"
+           class="text-white text-decoration-none position-relative">
 
-                <canvas id="financeChart" height="120"></canvas>
-            </div>
-        </div>
+            <i class="bi bi-bell-fill fs-4"></i>
 
-        <div class="col-xl-4">
-            <div class="glass p-4 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h5 class="mb-0">Financial Health</h5>
-                    <i class="bi bi-heart-pulse text-success fs-4"></i>
-                </div>
+        </a>
 
-                <div class="ring-wrap">
-                    <div class="ring" style="--p:<?php echo max(5,min(95,$savings_rate)); ?>;"></div>
+        <!-- Profile -->
+        <a href="profile.php"
+           class="d-flex align-items-center gap-3 text-decoration-none text-white">
 
-                    <div class="ring-center">
-                        <div>
-                            <div class="small text-secondary">Savings Rate</div>
-                            <div class="fs-2 fw-bold"><?php echo $savings_rate; ?>%</div>
-                        </div>
-                    </div>
-                </div>
+            <img
+                src="uploads/profile/<?= htmlspecialchars($profile_image) ?>"
+                alt="Profile"
+                style="width:48px;height:48px;border-radius:50%;object-fit:cover;border:2px solid #f59e0b;">
 
-                <div class="text-center mt-3">
-                    <div class="text-secondary small">Current balance</div>
-                    <div class="fw-semibold fs-5">₹ <?php echo number_format($balance,0); ?></div>
-                </div>
-            </div>
-        </div>
-
-    </div>
-
-    <!-- CATEGORY + SAVINGS -->
-    <div class="row g-4 mb-4">
-
-        <div class="col-lg-6">
-            <div class="glass p-4 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
-                        <h5 class="mb-0">Expense Categories</h5>
-                        <small class="text-secondary">Real database data</small>
-                    </div>
-                    <i class="bi bi-pie-chart text-info fs-4"></i>
-                </div>
-
-                <canvas id="categoryChart" height="220"></canvas>
-            </div>
-        </div>
-
-        <div class="col-lg-6">
-            <div class="glass p-4 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
-                        <h5 class="mb-0">Savings Goals</h5>
-                        <small class="text-secondary">Track progress towards your target</small>
-                    </div>
-                    <i class="bi bi-piggy-bank text-warning fs-4"></i>
-                </div>
-
-                <div class="mb-4">
-                    <div class="d-flex justify-content-between mb-2">
-                        <span>Emergency Fund</span>
-                        <span>₹ 75,000 / ₹ 1,00,000</span>
-                    </div>
-
-                    <div class="progress" style="height:12px;">
-                        <div class="progress-bar bg-success" style="width:75%"></div>
-                    </div>
-                </div>
-
-                <div class="mb-4">
-                    <div class="d-flex justify-content-between mb-2">
-                        <span>Vacation</span>
-                        <span>₹ 22,000 / ₹ 50,000</span>
-                    </div>
-
-                    <div class="progress" style="height:12px;">
-                        <div class="progress-bar bg-info" style="width:44%"></div>
-                    </div>
-                </div>
-
-                <div>
-                    <div class="d-flex justify-content-between mb-2">
-                        <span>New Laptop</span>
-                        <span>₹ 48,000 / ₹ 80,000</span>
-                    </div>
-
-                    <div class="progress" style="height:12px;">
-                        <div class="progress-bar bg-warning" style="width:60%"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-    </div>
-
-    <!-- HEATMAP + BUDGET -->
-    <div class="row g-4 mb-4">
-
-        <div class="col-lg-7">
-            <div class="glass p-4 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
-                        <h5 class="mb-0">Spending Heatmap</h5>
-                        <small class="text-secondary">Higher intensity means higher spending</small>
-                    </div>
-                    <i class="bi bi-grid-3x3-gap text-info fs-4"></i>
-                </div>
-
-                <div class="heatmap">
-                    <div class="heat l1"></div><div class="heat l2"></div><div class="heat l3"></div><div class="heat l2"></div><div class="heat l4"></div><div class="heat l1"></div><div class="heat l3"></div>
-                    <div class="heat l2"></div><div class="heat l3"></div><div class="heat l1"></div><div class="heat l4"></div><div class="heat l2"></div><div class="heat l3"></div><div class="heat l1"></div>
-                    <div class="heat l3"></div><div class="heat l4"></div><div class="heat l2"></div><div class="heat l1"></div><div class="heat l3"></div><div class="heat l2"></div><div class="heat l4"></div>
-                    <div class="heat l1"></div><div class="heat l2"></div><div class="heat l3"></div><div class="heat l4"></div><div class="heat l2"></div><div class="heat l1"></div><div class="heat l3"></div>
-                </div>
-
-                <div class="d-flex align-items-center gap-3 mt-3 small text-secondary">
-                    <span class="d-flex align-items-center gap-1"><span class="heat l1" style="width:18px;height:18px;"></span>Low</span>
-                    <span class="d-flex align-items-center gap-1"><span class="heat l2" style="width:18px;height:18px;"></span>Moderate</span>
-                    <span class="d-flex align-items-center gap-1"><span class="heat l3" style="width:18px;height:18px;"></span>High</span>
-                    <span class="d-flex align-items-center gap-1"><span class="heat l4" style="width:18px;height:18px;"></span>Very High</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-lg-5">
-            <div class="glass p-4 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
-                        <h5 class="mb-0">Budget Tracker</h5>
-                        <small class="text-secondary">Monthly spending vs budget</small>
-                    </div>
-                    <i class="bi bi-wallet2 text-warning fs-4"></i>
-                </div>
-
-                <div class="mb-3">
-                    <div class="d-flex justify-content-between">
-                        <span>Budget</span>
-                        <span>₹ <?php echo number_format($budget_amount,0); ?></span>
-                    </div>
-                </div>
-
-                <div class="mb-3">
-                    <div class="d-flex justify-content-between">
-                        <span>Spent</span>
-                        <span>₹ <?php echo number_format($current_month_expense,0); ?></span>
-                    </div>
-                </div>
-
-                <div class="mb-3">
-                    <div class="d-flex justify-content-between">
-                        <span>Remaining</span>
-                        <span>₹ <?php echo number_format(max(0,$budget_amount-$current_month_expense),0); ?></span>
-                    </div>
-                </div>
-
-                <div class="progress mb-3" style="height:14px;">
-                    <div class="progress-bar <?php echo $budget_percent > 85 ? 'bg-danger' : ($budget_percent > 60 ? 'bg-warning' : 'bg-success'); ?>"
-                         style="width:<?php echo $budget_percent; ?>%"></div>
-                </div>
-
-                <div class="small text-secondary">
-                    <?php echo round($budget_percent); ?>% of your monthly budget has been used.
-                </div>
-            </div>
-        </div>
-
-    </div>
-
-    <!-- RECENT TRANSACTIONS -->
-    <div class="glass p-4">
-        <div class="d-flex justify-content-between align-items-center mb-3">
             <div>
-                <h5 class="mb-0">Recent Transactions</h5>
-                <small class="text-secondary">Latest expenses from your database</small>
+
+                <div class="fw-semibold">
+                    <?= htmlspecialchars($fullname) ?>
+                </div>
+
+                <small class="text-secondary">
+                    View Profile
+                </small>
+
             </div>
 
-            <a href="transactions.php" class="btn btn-outline-light btn-sm">
-                <i class="bi bi-arrow-right me-1"></i>View all
-            </a>
-        </div>
+        </a>
 
-        <div class="table-responsive">
-            <table class="table table-darkish table-hover align-middle">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Category</th>
-                        <th>Description</th>
-                        <th class="text-end">Amount</th>
-                    </tr>
-                </thead>
-
-                <tbody>
-                <?php while($row = $recent->fetch_assoc()): ?>
-                    <tr>
-                        <td><?php echo date('d M Y', strtotime($row['expense_date'])); ?></td>
-
-                        <td>
-                            <span class="badge text-bg-info"><?php echo htmlspecialchars($row['category_name']); ?></span>
-                        </td>
-
-                        <td><?php echo htmlspecialchars($row['description']); ?></td>
-
-                        <td class="text-end text-danger fw-semibold">
-                            ₹ <?php echo number_format($row['amount'],2); ?>
-                        </td>
-                    </tr>
-                <?php endwhile; ?>
-                </tbody>
-            </table>
-        </div>
     </div>
 
 </div>
-```
+<!-- ===========================
+        SUMMARY CARDS
+=========================== -->
+
+<style>
+
+.summary-card{
+
+padding:25px;
+
+border-radius:22px;
+
+color:#fff;
+
+transition:.3s;
+
+box-shadow:0 15px 35px rgba(0,0,0,.25);
+
+overflow:hidden;
+
+position:relative;
+
+}
+
+.summary-card:hover{
+
+transform:translateY(-8px);
+
+box-shadow:0 20px 45px rgba(0,0,0,.35);
+
+}
+
+.summary-card i{
+
+font-size:2.4rem;
+
+opacity:.9;
+
+}
+
+.summary-card h6{
+
+margin-top:15px;
+
+font-weight:500;
+
+opacity:.9;
+
+}
+
+.summary-card h2{
+
+font-weight:700;
+
+margin-top:8px;
+
+}
+
+.income-card{
+
+background:linear-gradient(135deg,#16a34a,#22c55e);
+
+}
+
+.expense-card{
+
+background:linear-gradient(135deg,#dc2626,#ef4444);
+
+}
+
+.balance-card{
+
+background:linear-gradient(135deg,#2563eb,#3b82f6);
+
+}
+
+.savings-card{
+
+background:linear-gradient(135deg,#7c3aed,#9333ea);
+
+}
+
+</style>
+
+
+
+<div class="row g-4 mb-4">
+
+    <!-- Total Income -->
+
+    <div class="col-xl-3 col-md-6">
+
+        <div class="summary-card income-card">
+
+            <i class="bi bi-cash-stack"></i>
+
+            <h6>Total Income</h6>
+
+            <h2>
+
+                ₹<?= number_format($total_income,2) ?>
+
+            </h2>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- Total Expense -->
+
+    <div class="col-xl-3 col-md-6">
+
+        <div class="summary-card expense-card">
+
+            <i class="bi bi-wallet2"></i>
+
+            <h6>Total Expenses</h6>
+
+            <h2>
+
+                ₹<?= number_format($total_expense,2) ?>
+
+            </h2>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- Balance -->
+
+    <div class="col-xl-3 col-md-6">
+
+        <div class="summary-card balance-card">
+
+            <i class="bi bi-bank2"></i>
+
+            <h6>Net Balance</h6>
+
+            <h2>
+
+                ₹<?= number_format($balance,2) ?>
+
+            </h2>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- Savings -->
+
+    <div class="col-xl-3 col-md-6">
+
+        <div class="summary-card savings-card">
+
+            <i class="bi bi-piggy-bank-fill"></i>
+
+            <h6>Total Savings</h6>
+
+            <h2>
+
+                ₹<?= number_format($total_savings,2) ?>
+
+            </h2>
+
+        </div>
+
+    </div>
 
 </div>
+
+
+
+<!-- ===========================
+        MONTHLY OVERVIEW
+=========================== -->
+
+<div class="glass p-4 mb-4">
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+
+        <h4 class="fw-bold mb-0">
+
+            <i class="bi bi-calendar3 text-warning me-2"></i>
+
+            Monthly Overview
+
+        </h4>
+
+    </div>
+
+    <div class="row text-center">
+
+        <div class="col-md-6">
+
+            <h6 class="text-success">
+
+                This Month Income
+
+            </h6>
+
+            <h3>
+
+                ₹<?= number_format($monthly_income,2) ?>
+
+            </h3>
+
+        </div>
+
+        <div class="col-md-6">
+
+            <h6 class="text-danger">
+
+                This Month Expense
+
+            </h6>
+
+            <h3>
+
+                ₹<?= number_format($monthly_expense,2) ?>
+
+            </h3>
+
+        </div>
+
+    </div>
+
+</div>
+<!-- ===========================
+        CHART.JS
+=========================== -->
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+
+<!-- ===========================
+        ANALYTICS
+=========================== -->
+
+<div class="row g-4 mb-4">
+
+    <!-- Income vs Expense -->
+
+    <div class="col-lg-7">
+
+        <div class="glass p-4 h-100">
+
+            <h4 class="fw-bold mb-4">
+
+                <i class="bi bi-bar-chart-fill text-warning me-2"></i>
+
+                Income vs Expense
+
+            </h4>
+
+            <canvas id="incomeExpenseChart" height="120"></canvas>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- Expense Categories -->
+
+    <div class="col-lg-5">
+
+        <div class="glass p-4 h-100">
+
+            <h4 class="fw-bold mb-4">
+
+                <i class="bi bi-pie-chart-fill text-warning me-2"></i>
+
+                Expense Categories
+
+            </h4>
+
+            <canvas id="expenseCategoryChart" height="220"></canvas>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+
+<!-- ===========================
+        FINANCIAL INSIGHTS
+=========================== -->
+
+<div class="glass p-4 mb-4">
+
+    <h4 class="fw-bold mb-4">
+
+        <i class="bi bi-lightbulb-fill text-warning me-2"></i>
+
+        Financial Insights
+
+    </h4>
+
+    <div class="row">
+
+        <div class="col-md-4 mb-3">
+
+            <div class="p-3 rounded bg-success bg-opacity-25">
+
+                <h6 class="text-success">
+
+                    Income
+
+                </h6>
+
+                <h3>
+
+                    ₹<?= number_format($total_income,2) ?>
+
+                </h3>
+
+            </div>
+
+        </div>
+
+
+
+        <div class="col-md-4 mb-3">
+
+            <div class="p-3 rounded bg-danger bg-opacity-25">
+
+                <h6 class="text-danger">
+
+                    Expenses
+
+                </h6>
+
+                <h3>
+
+                    ₹<?= number_format($total_expense,2) ?>
+
+                </h3>
+
+            </div>
+
+        </div>
+
+
+
+        <div class="col-md-4 mb-3">
+
+            <div class="p-3 rounded bg-primary bg-opacity-25">
+
+                <h6 class="text-info">
+
+                    Savings Rate
+
+                </h6>
+
+                <h3>
+
+                    <?php
+
+                    if($total_income>0){
+
+                        echo number_format(($total_savings/$total_income)*100,1);
+
+                    }else{
+
+                        echo "0";
+
+                    }
+
+                    ?>%
+
+                </h3>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+<!-- ===========================
+        RECENT TRANSACTIONS
+=========================== -->
+
+<div class="glass p-4 mb-4">
+
+    <div class="d-flex justify-content-between align-items-center mb-4">
+
+        <h4 class="fw-bold mb-0">
+
+            <i class="bi bi-clock-history text-warning me-2"></i>
+
+            Recent Transactions
+
+        </h4>
+
+        <a href="reports.php" class="btn btn-warning btn-sm">
+
+            View All
+
+        </a>
+
+    </div>
+
+    <div class="table-responsive">
+
+        <table class="table table-dark table-hover align-middle">
+
+            <thead>
+
+                <tr>
+
+                    <th>Type</th>
+
+                    <th>Category</th>
+
+                    <th>Description</th>
+
+                    <th>Date</th>
+
+                    <th class="text-end">Amount</th>
+
+                </tr>
+
+            </thead>
+
+            <tbody>
+
+            <?php if($recent_transactions->num_rows>0): ?>
+
+            <?php while($row=$recent_transactions->fetch_assoc()): ?>
+
+            <tr>
+
+                <td>
+
+                    <?php if($row['type']=="Income"): ?>
+
+                        <span class="badge bg-success">
+
+                            <i class="bi bi-arrow-down-circle me-1"></i>
+
+                            Income
+
+                        </span>
+
+                    <?php else: ?>
+
+                        <span class="badge bg-danger">
+
+                            <i class="bi bi-arrow-up-circle me-1"></i>
+
+                            Expense
+
+                        </span>
+
+                    <?php endif; ?>
+
+                </td>
+
+                <td>
+
+                    <span class="badge bg-primary">
+
+                        <?= htmlspecialchars($row['category']) ?>
+
+                    </span>
+
+                </td>
+
+                <td>
+
+                    <?= htmlspecialchars($row['description'] ?: 'No Description') ?>
+
+                </td>
+
+                <td>
+
+                    <?= date("d M Y",strtotime($row['trans_date'])) ?>
+
+                </td>
+
+                <td class="text-end fw-bold">
+
+                    <?php if($row['type']=="Income"): ?>
+
+                        <span class="text-success">
+
+                            +₹<?= number_format($row['amount'],2) ?>
+
+                        </span>
+
+                    <?php else: ?>
+
+                        <span class="text-danger">
+
+                            -₹<?= number_format($row['amount'],2) ?>
+
+                        </span>
+
+                    <?php endif; ?>
+
+                </td>
+
+            </tr>
+
+            <?php endwhile; ?>
+
+            <?php else: ?>
+
+            <tr>
+
+                <td colspan="5" class="text-center py-5">
+
+                    <i class="bi bi-receipt display-5 text-secondary d-block mb-3"></i>
+
+                    <span class="text-secondary">
+
+                        No recent transactions found.
+
+                    </span>
+
+                </td>
+
+            </tr>
+
+            <?php endif; ?>
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+</div>
+
+
+
+<!-- ===========================
+        QUICK ACTIONS
+=========================== -->
+
+<div class="glass p-4 mb-4">
+
+    <h4 class="fw-bold mb-4">
+
+        <i class="bi bi-lightning-charge-fill text-warning me-2"></i>
+
+        Quick Actions
+
+    </h4>
+
+    <div class="row g-3">
+
+        <div class="col-lg-3 col-md-6">
+
+            <a href="add_income.php"
+               class="btn btn-success w-100 py-3">
+
+                <i class="bi bi-plus-circle me-2"></i>
+
+                Add Income
+
+            </a>
+
+        </div>
+
+        <div class="col-lg-3 col-md-6">
+
+            <a href="add_expense.php"
+               class="btn btn-danger w-100 py-3">
+
+                <i class="bi bi-dash-circle me-2"></i>
+
+                Add Expense
+
+            </a>
+
+        </div>
+
+        <div class="col-lg-3 col-md-6">
+
+            <a href="savings.php"
+               class="btn btn-primary w-100 py-3">
+
+                <i class="bi bi-piggy-bank me-2"></i>
+
+                Savings Goal
+
+            </a>
+
+        </div>
+
+        <div class="col-lg-3 col-md-6">
+
+            <a href="reports.php"
+               class="btn btn-warning w-100 py-3">
+
+                <i class="bi bi-bar-chart-fill me-2"></i>
+
+                Reports
+
+            </a>
+
+        </div>
+
+    </div>
+
+</div><!-- ===========================
+        DASHBOARD WIDGETS
+=========================== -->
+
+<?php
+
+// Expense Percentage
+$expense_percentage = 0;
+
+if($total_income > 0){
+    $expense_percentage = ($total_expense / $total_income) * 100;
+    if($expense_percentage > 100){
+        $expense_percentage = 100;
+    }
+}
+
+// Savings Percentage
+$savings_percentage = 0;
+
+if($total_income > 0){
+    $savings_percentage = ($total_savings / $total_income) * 100;
+    if($savings_percentage > 100){
+        $savings_percentage = 100;
+    }
+}
+
+?>
+
+<div class="row g-4 mb-4">
+
+<!-- ================= Budget Progress ================= -->
+
+<div class="col-lg-6">
+
+<div class="glass p-4 h-100">
+
+<h4 class="fw-bold mb-4">
+
+<i class="bi bi-wallet-fill text-warning me-2"></i>
+
+Budget Usage
+
+</h4>
+
+<div class="d-flex justify-content-between mb-2">
+
+<span>Expenses</span>
+
+<strong><?= number_format($expense_percentage,1) ?>%</strong>
+
+</div>
+
+<div class="progress mb-4" style="height:14px;">
+
+<div
+class="progress-bar bg-danger"
+style="width:<?= $expense_percentage ?>%">
+
+</div>
+
+</div>
+
+<small class="text-secondary">
+
+You have spent
+
+<strong>₹<?= number_format($total_expense,2) ?></strong>
+
+out of
+
+<strong>₹<?= number_format($total_income,2) ?></strong>
+
+income.
+
+</small>
+
+</div>
+
+</div>
+
+
+
+<!-- ================= Savings Progress ================= -->
+
+<div class="col-lg-6">
+
+<div class="glass p-4 h-100">
+
+<h4 class="fw-bold mb-4">
+
+<i class="bi bi-piggy-bank-fill text-warning me-2"></i>
+
+Savings Progress
+
+</h4>
+
+<div class="d-flex justify-content-between mb-2">
+
+<span>Savings Rate</span>
+
+<strong><?= number_format($savings_percentage,1) ?>%</strong>
+
+</div>
+
+<div class="progress mb-4" style="height:14px;">
+
+<div
+class="progress-bar bg-success"
+style="width:<?= $savings_percentage ?>%">
+
+</div>
+
+</div>
+
+<small class="text-secondary">
+
+You have saved
+
+<strong>₹<?= number_format($total_savings,2) ?></strong>
+
+from your total income.
+
+</small>
+
+</div>
+
+</div>
+
+</div>
+
+
+
+<!-- ================= SMART INSIGHTS ================= -->
+
+<div class="glass p-4 mb-4">
+
+<h4 class="fw-bold mb-4">
+
+<i class="bi bi-lightbulb-fill text-warning me-2"></i>
+
+Smart Financial Insights
+
+</h4>
+
+<div class="row g-3">
+
+<div class="col-md-4">
+
+<div class="p-3 rounded bg-success bg-opacity-25 h-100">
+
+<h6 class="text-success">
+
+Excellent
+
+</h6>
+
+<p class="mb-0">
+
+<?php
+
+if($expense_percentage < 50){
+
+echo "Your expenses are well under control. Keep saving!";
+
+}else{
+
+echo "Try to reduce unnecessary spending to improve savings.";
+
+}
+
+?>
+
+</p>
+
+</div>
+
+</div>
+
+
+
+<div class="col-md-4">
+
+<div class="p-3 rounded bg-primary bg-opacity-25 h-100">
+
+<h6 class="text-info">
+
+Savings Advice
+
+</h6>
+
+<p class="mb-0">
+
+<?php
+
+if($savings_percentage >= 20){
+
+echo "Great job! Your savings rate is healthy.";
+
+}else{
+
+echo "Aim to save at least 20% of your income each month.";
+
+}
+
+?>
+
+</p>
+
+</div>
+
+</div>
+
+
+
+<div class="col-md-4">
+
+<div class="p-3 rounded bg-warning bg-opacity-25 h-100">
+
+<h6 class="text-warning">
+
+Monthly Status
+
+</h6>
+
+<p class="mb-0">
+
+<?php
+
+if($balance > 0){
+
+echo "You are running a positive balance this month.";
+
+}else{
+
+echo "Your expenses exceed your income. Review your budget.";
+
+}
+
+?>
+
+</p>
+
+</div>
+
+</div>
+
+</div>
+
+</div>
+
+
+
+<!-- ================= ACHIEVEMENTS ================= -->
+
+<div class="glass p-4 mb-5">
+
+<h4 class="fw-bold mb-4">
+
+<i class="bi bi-trophy-fill text-warning me-2"></i>
+
+Achievements
+
+</h4>
+
+<div class="row g-3">
+
+<div class="col-md-3">
+
+<div class="border rounded p-3 text-center">
+
+<h1>💰</h1>
+
+<h6>Income Added</h6>
+
+<p class="mb-0">
+
+₹<?= number_format($total_income,0) ?>
+
+</p>
+
+</div>
+
+</div>
+
+<div class="col-md-3">
+
+<div class="border rounded p-3 text-center">
+
+<h1>🎯</h1>
+
+<h6>Total Savings</h6>
+
+<p class="mb-0">
+
+₹<?= number_format($total_savings,0) ?>
+
+</p>
+
+</div>
+
+</div>
+
+<div class="col-md-3">
+
+<div class="border rounded p-3 text-center">
+
+<h1>📊</h1>
+
+<h6>Budget Used</h6>
+
+<p class="mb-0">
+
+<?= number_format($expense_percentage,1) ?>%
+
+</p>
+
+</div>
+
+</div>
+
+<div class="col-md-3">
+
+<div class="border rounded p-3 text-center">
+
+<h1>🏆</h1>
+
+<h6>Balance</h6>
+
+<p class="mb-0">
+
+₹<?= number_format($balance,0) ?>
+
+</p>
+
+</div>
+
+</div>
+
+</div>
+
+</div>
+<!-- ===========================
+        FOOTER
+=========================== -->
+
+<footer class="text-center text-secondary py-4 mt-5">
+
+    <hr class="border-secondary">
+
+    <p class="mb-0">
+
+        © <?= date('Y') ?> <strong>Finora</strong> | Personal Expense Manager
+
+    </p>
+
+</footer>
+
+</div>
+<!-- End Main -->
+
+
+
+<!-- ===========================
+        CHART.JS
+=========================== -->
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <script>
-// ===== INCOME VS EXPENSE =====
-new Chart(document.getElementById('financeChart'),{
-    type:'line',
-    data:{
-        labels:['Jan','Feb','Mar','Apr','May','Jun','Jul'],
-        datasets:[
-            {
-                label:'Income',
-                data:[42000,46000,45000,52000,50000,56000,<?php echo $current_month_income ?: 60000; ?>],
-                borderColor:'#22c55e',
-                backgroundColor:'rgba(34,197,94,.15)',
-                fill:true,
-                tension:.4
-            },
-            {
-                label:'Expenses',
-                data:[18000,22000,20000,25000,24000,27000,<?php echo $current_month_expense ?: 30000; ?>],
-                borderColor:'#ef4444',
-                backgroundColor:'rgba(239,68,68,.12)',
-                fill:true,
-                tension:.4
-            }
-        ]
-    },
-    options:{
-        responsive:true,
-        plugins:{
-            legend:{ labels:{ color:'#e5e7eb' } }
-        },
-        scales:{
-            x:{
-                ticks:{ color:'#c7d2fe' },
-                grid:{ color:'rgba(255,255,255,.06)' }
-            },
-            y:{
-                ticks:{ color:'#c7d2fe' },
-                grid:{ color:'rgba(255,255,255,.06)' }
-            }
-        }
-    }
-});
 
-// ===== CATEGORY DOUGHNUT =====
-new Chart(document.getElementById('categoryChart'),{
-    type:'doughnut',
+// ================= Income vs Expense =================
+
+new Chart(document.getElementById("incomeExpenseChart"),{
+
+    type:"bar",
+
     data:{
-        labels: <?php echo json_encode($cat_labels); ?>,
+
+        labels:["Income","Expense"],
+
         datasets:[{
-            data: <?php echo json_encode($cat_values); ?>,
-            backgroundColor:[
-                '#2563eb','#16a34a','#f59e0b','#dc2626',
-                '#7c3aed','#06b6d4','#ea580c','#059669'
+
+            label:"Amount (₹)",
+
+            data:[
+
+                <?= $chart_income ?>,
+
+                <?= $chart_expense ?>
+
             ],
-            borderWidth:0
+
+            backgroundColor:[
+
+                "#22c55e",
+
+                "#ef4444"
+
+            ],
+
+            borderRadius:10
+
         }]
+
     },
+
     options:{
+
         responsive:true,
+
         plugins:{
+
             legend:{
-                position:'bottom',
-                labels:{ color:'#e5e7eb' }
+
+                display:false
+
             }
+
         },
-        cutout:'68%'
+
+        scales:{
+
+            y:{
+
+                beginAtZero:true,
+
+                ticks:{
+
+                    color:"#ffffff"
+
+                },
+
+                grid:{
+
+                    color:"rgba(255,255,255,.08)"
+
+                }
+
+            },
+
+            x:{
+
+                ticks:{
+
+                    color:"#ffffff"
+
+                },
+
+                grid:{
+
+                    display:false
+
+                }
+
+            }
+
+        }
+
     }
+
 });
 
-// ===== NOTIFICATION ACTION =====
-function markAllRead(){
-    const badge=document.getElementById('notifCount');
-    if(badge) badge.style.display='none';
 
-    document.querySelectorAll('.new-badge').forEach(b=>b.remove());
 
-    const unread=document.getElementById('unreadText');
-    if(unread) unread.innerText='0 unread';
+// ================= Expense Category =================
+
+new Chart(document.getElementById("expenseCategoryChart"),{
+
+    type:"doughnut",
+
+    data:{
+
+        labels:<?= json_encode($category_labels) ?>,
+
+        datasets:[{
+
+            data:<?= json_encode($category_amounts) ?>,
+
+            backgroundColor:[
+
+                "#3b82f6",
+
+                "#22c55e",
+
+                "#f59e0b",
+
+                "#ef4444",
+
+                "#8b5cf6",
+
+                "#14b8a6",
+
+                "#ec4899",
+
+                "#64748b"
+
+            ],
+
+            borderWidth:0
+
+        }]
+
+    },
+
+    options:{
+
+        responsive:true,
+
+        plugins:{
+
+            legend:{
+
+                position:"bottom",
+
+                labels:{
+
+                    color:"#ffffff",
+
+                    padding:18
+
+                }
+
+            }
+
+        }
+
+    }
+
+});
+
+
+
+// ================= Sidebar Toggle =================
+
+function toggleSidebar(){
+
+    document.getElementById("sidebar").classList.toggle("active");
+
 }
+
 </script>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+
+<!-- ===========================
+        AUTO HIDE ALERTS
+=========================== -->
+
+<script>
+
+setTimeout(function(){
+
+    document.querySelectorAll(".alert").forEach(function(alert){
+
+        alert.style.transition="0.5s";
+
+        alert.style.opacity="0";
+
+        setTimeout(function(){
+
+            alert.remove();
+
+        },500);
+
+    });
+
+},3000);
+
+</script>
+
+
+
+<!-- ===========================
+        CARD ANIMATION
+=========================== -->
+
+<script>
+
+const cards=document.querySelectorAll(".summary-card");
+
+cards.forEach(function(card){
+
+    card.addEventListener("mouseenter",function(){
+
+        card.style.transform="translateY(-8px) scale(1.02)";
+
+    });
+
+    card.addEventListener("mouseleave",function(){
+
+        card.style.transform="translateY(0) scale(1)";
+
+    });
+
+});
+
+</script>
+
+
+
+<!-- ===========================
+        ACTIVE MENU
+=========================== -->
+
+<script>
+
+const current=window.location.pathname.split("/").pop();
+
+document.querySelectorAll(".menu a").forEach(function(link){
+
+    if(link.getAttribute("href")==current){
+
+        link.classList.add("active");
+
+    }
+
+});
+
+</script>
+
+
+
+<!-- ===========================
+        PAGE LOADER
+=========================== -->
+
+<script>
+
+window.addEventListener("load",function(){
+
+    document.body.style.opacity="1";
+
+});
+
+document.body.style.opacity="0";
+
+document.body.style.transition=".4s";
+
+</script>
+
+
 
 </body>
 </html>

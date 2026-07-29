@@ -2,394 +2,1228 @@
 session_start();
 include 'db.php';
 
-if(!isset($_SESSION['user_id'])){
-    header('Location: login.php');
+// =========================
+// LOGIN CHECK
+// =========================
+
+if (!isset($_SESSION['user_id'])) {
+    header("Location: login.php");
     exit();
 }
 
 $user_id = $_SESSION['user_id'];
 
-// ===== CREATE DEFAULT SETTINGS IF NOT EXISTS =====
-$check = $conn->prepare("SELECT * FROM user_settings WHERE user_id=?");
-$check->bind_param("i", $user_id);
-$check->execute();
-$result = $check->get_result();
+$success = "";
+$error = "";
 
-if($result->num_rows == 0){
-    $insert = $conn->prepare("INSERT INTO user_settings(user_id) VALUES(?)");
-    $insert->bind_param("i", $user_id);
-    $insert->execute();
-}
 
-$settings = $conn->query("SELECT * FROM user_settings WHERE user_id=$user_id")->fetch_assoc();
-$current_theme = $settings['theme'] ?? 'dark';
+// =========================
+// FETCH USER DATA
+// =========================
 
-// ===== SAVE SETTINGS =====
-if(isset($_POST['save_settings'])){
+$stmt = $conn->prepare("
+SELECT *
+FROM users
+WHERE user_id=?
+");
 
-    $theme = $_POST['theme'];
-    $currency = $_POST['currency'];
-    $email_notifications = isset($_POST['email_notifications']) ? 1 : 0;
-    $budget_alerts = isset($_POST['budget_alerts']) ? 1 : 0;
-    $profile_visibility = $_POST['profile_visibility'];
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
 
-    $stmt = $conn->prepare("UPDATE user_settings SET theme=?, currency=?, email_notifications=?, budget_alerts=?, profile_visibility=? WHERE user_id=?");
+$user = $stmt->get_result()->fetch_assoc();
+
+$stmt->close();
+
+
+// =========================
+// UPDATE PROFILE
+// =========================
+
+if(isset($_POST['update_profile'])){
+
+    $fullname = trim($_POST['fullname']);
+    $phone = trim($_POST['phone']);
+
+    $profile_image = $user['profile_image'];
+
+    // Upload new profile image
+    if(isset($_FILES['profile_image']) &&
+       $_FILES['profile_image']['error']==0){
+
+        $folder = "uploads/profile/";
+
+        if(!is_dir($folder)){
+            mkdir($folder,0777,true);
+        }
+
+        $filename = time()."_".basename($_FILES['profile_image']['name']);
+
+        $target = $folder.$filename;
+
+        move_uploaded_file(
+            $_FILES['profile_image']['tmp_name'],
+            $target
+        );
+
+        $profile_image = $filename;
+    }
+
+    $stmt = $conn->prepare("
+    UPDATE users
+    SET
+        fullname=?,
+        phone=?,
+        profile_image=?
+    WHERE user_id=?
+    ");
 
     $stmt->bind_param(
-        "ssiisi",
-        $theme,
-        $currency,
-        $email_notifications,
-        $budget_alerts,
-        $profile_visibility,
+        "sssi",
+        $fullname,
+        $phone,
+        $profile_image,
         $user_id
     );
 
     if($stmt->execute()){
-        $success = "Settings saved successfully!";
-        $_SESSION['theme'] = $theme;
-        $settings = $conn->query("SELECT * FROM user_settings WHERE user_id=$user_id")->fetch_assoc();
+
+        $_SESSION['fullname'] = $fullname;
+
+        $success = "Profile updated successfully.";
+
+        // Refresh user data
+        $stmt2 = $conn->prepare("
+        SELECT *
+        FROM users
+        WHERE user_id=?
+        ");
+
+        $stmt2->bind_param("i",$user_id);
+        $stmt2->execute();
+
+        $user = $stmt2->get_result()->fetch_assoc();
+
+        $stmt2->close();
+
     }else{
-        $error = "Failed to save settings.";
+
+        $error = "Unable to update profile.";
+
     }
+
+    $stmt->close();
+
 }
 
-// ===== CLEAR ALL DATA =====
-if(isset($_POST['clear_data'])){
 
-    $conn->query("DELETE FROM expenses WHERE user_id=$user_id");
-    $conn->query("DELETE FROM income WHERE user_id=$user_id");
-    $conn->query("DELETE FROM budgets WHERE user_id=$user_id");
+// =========================
+// CHANGE PASSWORD
+// =========================
 
-    $success = "All transaction data has been cleared.";
+if(isset($_POST['change_password'])){
+
+    $current = $_POST['current_password'];
+
+    $new = $_POST['new_password'];
+
+    $confirm = $_POST['confirm_password'];
+
+    if(!password_verify($current,$user['password'])){
+
+        $error = "Current password is incorrect.";
+
+    }
+
+    elseif($new != $confirm){
+
+        $error = "New passwords do not match.";
+
+    }
+
+    elseif(strlen($new) < 6){
+
+        $error = "Password must be at least 6 characters.";
+
+    }
+
+    else{
+
+        $hash = password_hash($new,PASSWORD_DEFAULT);
+
+        $stmt = $conn->prepare("
+        UPDATE users
+        SET password=?
+        WHERE user_id=?
+        ");
+
+        $stmt->bind_param(
+            "si",
+            $hash,
+            $user_id
+        );
+
+        if($stmt->execute()){
+
+            $success = "Password changed successfully.";
+
+        }else{
+
+            $error = "Unable to change password.";
+
+        }
+
+        $stmt->close();
+
+    }
+
 }
+
+
+// =========================
+// VARIABLES
+// =========================
+
+$fullname = $user['fullname'];
+
+$email = $user['email'];
+
+$phone = $user['phone'];
+
+$profile_image = !empty($user['profile_image'])
+    ? $user['profile_image']
+    : "default.png";
+
+$member_since = date(
+    "d M Y",
+    strtotime($user['created_at'])
+);
+
 ?>
-
 <!DOCTYPE html>
-
 <html lang="en">
+
 <head>
+
 <meta charset="UTF-8">
+
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Settings - Finora</title>
+
+<title>Finora • Settings</title>
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
 
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
 <style>
-<style>
-:root{
-<?php if($current_theme == 'light'): ?>
-    --bg:#f4f7fb;
-    --panel:rgba(255,255,255,0.92);
-    --line:#d6deeb;
-    --text:#0f172a;
-    --muted:#475569;
-    --input-bg:#ffffff;
-    --input-border:#cbd5e1;
-<?php else: ?>
-    --bg:#0b1020;
-    --panel:#121933cc;
-    --line:#2a3566;
-    --text:#eef2ff;
-    --muted:#a5b4fc;
-    --input-bg:#0f172a;
-    --input-border:#334155;
-<?php endif; ?>
+
+*{
+margin:0;
+padding:0;
+box-sizing:border-box;
 }
 
 body{
-    background: var(--bg);
-    color:var(--text);
-    font-family:'Segoe UI',sans-serif;
-    min-height:100vh;
-    transition: background .3s ease, color .3s ease;
+
+font-family:'Poppins',sans-serif;
+
+background:
+radial-gradient(circle at top left,#312e81 0%,transparent 30%),
+radial-gradient(circle at bottom right,#7c3aed 0%,transparent 35%),
+#0b1020;
+
+color:#fff;
+
+overflow-x:hidden;
+
 }
+
+/* Sidebar */
+
+.sidebar{
+
+position:fixed;
+
+left:0;
+
+top:0;
+
+width:270px;
+
+height:100vh;
+
+background:rgba(18,25,51,.88);
+
+backdrop-filter:blur(20px);
+
+border-right:1px solid rgba(255,255,255,.08);
+
+padding:25px;
+
+z-index:1000;
+
+}
+
+.profile-box{
+
+text-align:center;
+
+padding-bottom:25px;
+
+margin-bottom:25px;
+
+border-bottom:1px solid rgba(255,255,255,.08);
+
+}
+
+.profile-box img{
+
+width:90px;
+
+height:90px;
+
+border-radius:50%;
+
+object-fit:cover;
+
+border:4px solid #f59e0b;
+
+}
+
+.profile-box h5{
+
+margin-top:15px;
+
+font-weight:600;
+
+}
+
+.profile-box small{
+
+color:#94a3b8;
+
+}
+
+.menu a{
+
+display:flex;
+
+align-items:center;
+
+gap:12px;
+
+padding:13px 16px;
+
+margin-bottom:10px;
+
+border-radius:14px;
+
+text-decoration:none;
+
+color:#fff;
+
+transition:.3s;
+
+font-weight:500;
+
+}
+
+.menu a:hover{
+
+background:#7c3aed;
+
+transform:translateX(5px);
+
+}
+
+.menu a.active{
+
+background:#f59e0b;
+
+color:#111827;
+
+font-weight:600;
+
+}
+
+/* Main */
+
+.main{
+
+margin-left:270px;
+
+padding:30px;
+
+}
+
+/* Topbar */
+
+.topbar{
+
+display:flex;
+
+justify-content:space-between;
+
+align-items:center;
+
+margin-bottom:35px;
+
+}
+
+.top-right{
+
+display:flex;
+
+align-items:center;
+
+gap:20px;
+
+}
+
+.user-link{
+
+display:flex;
+
+align-items:center;
+
+gap:12px;
+
+text-decoration:none;
+
+color:#fff;
+
+}
+
+.user-link img{
+
+width:45px;
+
+height:45px;
+
+border-radius:50%;
+
+object-fit:cover;
+
+border:2px solid #f59e0b;
+
+}
+
+/* Glass Card */
 
 .glass{
-    background:var(--panel);
-    border:1px solid rgba(255,255,255,.08);
-    backdrop-filter: blur(16px);
-    border-radius:26px;
-    box-shadow:0 12px 40px rgba(0,0,0,.28);
+
+background:rgba(18,25,51,.78);
+
+border:1px solid rgba(255,255,255,.08);
+
+backdrop-filter:blur(18px);
+
+border-radius:20px;
+
+padding:30px;
+
+box-shadow:0 20px 40px rgba(0,0,0,.30);
+
+margin-bottom:25px;
+
 }
 
-.form-control,.form-select{
-    background:var(--input-bg);
-    border:1px solid var(--input-border);
-    color:var(--text);
-    border-radius:14px;
-    padding:12px 14px;
-    transition: all .25s ease;
+/* Inputs */
+
+.form-control{
+
+background:#111827;
+
+border:1px solid #334155;
+
+color:#fff;
+
 }
 
-.form-control:focus,.form-select:focus{
-    background:var(--input-bg);
-    color:var(--text);
-    border-color:#60a5fa;
-    box-shadow:0 0 0 .2rem rgba(96,165,250,.15);
+.form-control:focus{
+
+background:#111827;
+
+color:#fff;
+
+border-color:#f59e0b;
+
+box-shadow:none;
+
 }
 
-.section-title{
-    display:flex;
-    align-items:center;
-    gap:10px;
-    margin-bottom:20px;
+/* Responsive */
+
+@media(max-width:992px){
+
+.sidebar{
+
+left:-270px;
+
+transition:.4s;
+
 }
 
-.setting-row{
-    padding:18px 0;
-    border-bottom:1px solid rgba(255,255,255,.08);
+.sidebar.active{
+
+left:0;
+
 }
 
-.setting-row:last-child{
-    border-bottom:none;
+.main{
+
+margin-left:0;
+
 }
 
-.danger-box{
-    border:1px solid rgba(239,68,68,.4);
-    background:rgba(239,68,68,.08);
-    border-radius:18px;
-    padding:20px;
 }
 
-.form-check-input{
-    width:2.5rem;
-    height:1.3rem;
-    cursor:pointer;
-}
-
-.badge-soft{
-    background:rgba(96,165,250,.15);
-    color:#bfdbfe;
-    border:1px solid rgba(96,165,250,.25);
-}
-
-small.text-secondary{ color:var(--muted)!important; }
 </style>
 
 </head>
+
 <body>
 
-<div class="container py-4">
+<!-- Sidebar -->
 
-```
-<!-- HEADER -->
-<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
-    <div>
-        <h2 class="mb-0">Settings</h2>
-        <small class="text-secondary">Customize your Finora experience</small>
-    </div>
+<div class="sidebar" id="sidebar">
 
-    <a href="dashboard.php" class="btn btn-outline-light">
-        <i class="bi bi-arrow-left me-2"></i>Back to Dashboard
-    </a>
+<div class="profile-box">
+
+<img src="uploads/profile/<?= htmlspecialchars($profile_image) ?>" alt="Profile">
+
+<h5><?= htmlspecialchars($fullname) ?></h5>
+
+<small><?= htmlspecialchars($email) ?></small>
+
 </div>
 
-<?php if(isset($success)): ?>
-    <div class="alert alert-success alert-dismissible fade show">
-        <i class="bi bi-check-circle me-2"></i><?php echo $success; ?>
-        <button class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
+<div class="menu">
+
+<a href="dashboard.php">
+<i class="bi bi-grid-fill"></i>
+Dashboard
+</a>
+
+<a href="add_income.php">
+<i class="bi bi-cash-stack"></i>
+Income
+</a>
+
+<a href="add_expense.php">
+<i class="bi bi-wallet2"></i>
+Expenses
+</a>
+
+<a href="transactions.php">
+<i class="bi bi-arrow-left-right"></i>
+Transactions
+</a>
+
+<a href="savings.php">
+<i class="bi bi-piggy-bank-fill"></i>
+Savings
+</a>
+
+<a href="reports.php">
+<i class="bi bi-bar-chart-fill"></i>
+Reports
+</a>
+
+<a href="profile.php">
+<i class="bi bi-person-circle"></i>
+Profile
+</a>
+
+<a href="settings.php" class="active">
+<i class="bi bi-gear-fill"></i>
+Settings
+</a>
+
+<a href="logout.php">
+<i class="bi bi-box-arrow-right"></i>
+Logout
+</a>
+
+</div>
+
+</div>
+
+<!-- Main -->
+
+<div class="main">
+
+<!-- Topbar -->
+
+<div class="topbar">
+
+<div class="d-flex align-items-center gap-3">
+
+<button
+class="btn btn-warning d-lg-none"
+onclick="toggleSidebar()">
+
+<i class="bi bi-list"></i>
+
+</button>
+
+<div>
+
+<h2 class="fw-bold mb-1">
+
+Settings
+
+</h2>
+
+<p class="text-secondary mb-0">
+
+Manage your Finora account and security settings.
+
+</p>
+
+</div>
+
+</div>
+
+<div class="top-right">
+
+<a href="profile.php" class="user-link">
+
+<img src="uploads/profile/<?= htmlspecialchars($profile_image) ?>" alt="Profile">
+
+<div>
+
+<div class="fw-semibold">
+
+<?= htmlspecialchars($fullname) ?>
+
+</div>
+
+<small class="text-secondary">
+
+View Profile
+
+</small>
+
+</div>
+
+</a>
+
+</div>
+
+</div>
+
+<?php if($success!=""): ?>
+
+<div class="alert alert-success">
+
+<?= $success ?>
+
+</div>
+
 <?php endif; ?>
 
-<?php if(isset($error)): ?>
-    <div class="alert alert-danger alert-dismissible fade show">
-        <i class="bi bi-x-circle me-2"></i><?php echo $error; ?>
-        <button class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
+<?php if($error!=""): ?>
+
+<div class="alert alert-danger">
+
+<?= $error ?>
+
+</div>
+
 <?php endif; ?>
+<!-- ===========================
+        PROFILE SETTINGS
+=========================== -->
 
-<form method="POST">
+<div class="glass">
 
-    <!-- APPEARANCE -->
-    <div class="glass p-4 mb-4">
+    <h4 class="fw-bold mb-4">
+        <i class="bi bi-person-circle text-warning me-2"></i>
+        Profile Settings
+    </h4>
 
-        <div class="section-title">
-            <i class="bi bi-palette fs-4 text-info"></i>
-            <div>
-                <h4 class="mb-0">Appearance</h4>
-                <small class="text-secondary">Theme and display preferences</small>
-            </div>
-        </div>
+    <form method="POST" enctype="multipart/form-data">
 
-        <div class="setting-row">
-            <div class="row align-items-center">
-                <div class="col-md-6">
-                    <label class="form-label fw-semibold">Theme</label>
-                    <small class="d-block text-secondary">Choose your preferred application theme</small>
-                </div>
-                <div class="col-md-6">
-                    <select name="theme" class="form-select" id="themeSelect">
-                    <option value="dark" <?= $current_theme == 'dark' ? 'selected' : '' ?>>🌙 Dark</option>
-                    <option value="light" <?= $current_theme == 'light' ? 'selected' : '' ?>>☀️ Light</option>
-                </select>
-            </div>
-            </div>
-        </div>
+        <div class="row">
 
-        <div class="setting-row">
-            <div class="row align-items-center">
-                <div class="col-md-6">
-                    <label class="form-label fw-semibold">Currency</label>
-                    <small class="d-block text-secondary">Used across dashboard, reports and transactions</small>
-                </div>
-                <div class="col-md-6">
-                    <select name="currency" class="form-select">
-                        <option value="INR" <?php if($settings['currency']=='INR') echo 'selected'; ?>>₹ Indian Rupee (INR)</option>
-                        <option value="USD" <?php if($settings['currency']=='USD') echo 'selected'; ?>>$ US Dollar (USD)</option>
-                        <option value="EUR" <?php if($settings['currency']=='EUR') echo 'selected'; ?>>€ Euro (EUR)</option>
-                        <option value="GBP" <?php if($settings['currency']=='GBP') echo 'selected'; ?>>£ British Pound (GBP)</option>
-                    </select>
-                </div>
-            </div>
-        </div>
+            <!-- Profile Image -->
+            <div class="col-md-4 text-center mb-4">
 
-    </div>
+                <img src="uploads/profile/<?= htmlspecialchars($profile_image) ?>"
+                     class="rounded-circle shadow mb-3"
+                     style="width:170px;height:170px;object-fit:cover;border:4px solid #f59e0b;">
 
-    <!-- NOTIFICATIONS -->
-    <div class="glass p-4 mb-4">
-
-        <div class="section-title">
-            <i class="bi bi-bell fs-4 text-warning"></i>
-            <div>
-                <h4 class="mb-0">Notifications</h4>
-                <small class="text-secondary">Manage alerts and reminders</small>
-            </div>
-        </div>
-
-        <div class="setting-row">
-            <div class="d-flex justify-content-between align-items-center">
                 <div>
-                    <div class="fw-semibold">Email notifications</div>
-                    <small class="text-secondary">Receive account activity and summary emails</small>
+
+                    <label class="form-label fw-semibold">
+                        Change Profile Picture
+                    </label>
+
+                    <input
+                        type="file"
+                        name="profile_image"
+                        class="form-control"
+                        accept="image/*">
+
                 </div>
 
-                <div class="form-check form-switch m-0">
-                    <input class="form-check-input" type="checkbox" name="email_notifications"
-                           <?php if($settings['email_notifications']) echo 'checked'; ?>>
-                </div>
-            </div>
-        </div>
-
-        <div class="setting-row">
-            <div class="d-flex justify-content-between align-items-center">
-                <div>
-                    <div class="fw-semibold">Budget alerts</div>
-                    <small class="text-secondary">Get notified when spending reaches 80% of your budget</small>
-                </div>
-
-                <div class="form-check form-switch m-0">
-                    <input class="form-check-input" type="checkbox" name="budget_alerts"
-                           <?php if($settings['budget_alerts']) echo 'checked'; ?>>
-                </div>
-            </div>
-        </div>
-
-    </div>
-
-    <!-- PRIVACY -->
-    <div class="glass p-4 mb-4">
-
-        <div class="section-title">
-            <i class="bi bi-shield-lock fs-4 text-success"></i>
-            <div>
-                <h4 class="mb-0">Privacy</h4>
-                <small class="text-secondary">Control who can view your profile</small>
-            </div>
-        </div>
-
-        <div class="setting-row">
-            <div class="row align-items-center">
-                <div class="col-md-6">
-                    <label class="form-label fw-semibold">Profile visibility</label>
-                    <small class="d-block text-secondary">Choose who can see your profile information</small>
-                </div>
-                <div class="col-md-6">
-                    <select name="profile_visibility" class="form-select">
-                        <option value="private" <?php if($settings['profile_visibility']=='private') echo 'selected'; ?>>🔒 Private</option>
-                        <option value="friends" <?php if($settings['profile_visibility']=='friends') echo 'selected'; ?>>👥 Friends only</option>
-                        <option value="public" <?php if($settings['profile_visibility']=='public') echo 'selected'; ?>>🌍 Public</option>
-                    </select>
-                </div>
-            </div>
-        </div>
-
-    </div>
-
-    <!-- SAVE BUTTON -->
-    <div class="glass p-4 mb-4">
-        <div class="d-flex flex-wrap gap-3 align-items-center">
-            <button type="submit" name="save_settings" class="btn btn-primary px-4">
-                <i class="bi bi-save me-2"></i>Save Settings
-            </button>
-
-            <span class="badge badge-soft px-3 py-2">
-                <i class="bi bi-cloud-check me-1"></i>
-                Changes are saved to your account
-            </span>
-        </div>
-    </div>
-
-</form>
-
-<!-- DANGER ZONE -->
-<div class="glass p-4">
-
-    <div class="section-title">
-        <i class="bi bi-exclamation-triangle fs-4 text-danger"></i>
-        <div>
-            <h4 class="mb-0 text-danger">Danger Zone</h4>
-            <small class="text-secondary">These actions cannot be undone</small>
-        </div>
-    </div>
-
-    <div class="danger-box">
-
-        <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center gap-3">
-            <div>
-                <h5 class="mb-1 text-danger">Clear all transaction data</h5>
-                <p class="mb-0 text-secondary">
-                    This will permanently delete all your expenses, income records, and budgets.
-                </p>
             </div>
 
-            <form method="POST" onsubmit="return confirm('Are you sure? This action cannot be undone.');">
-                <button type="submit" name="clear_data" class="btn btn-danger">
-                    <i class="bi bi-trash me-2"></i>Clear Data
+            <!-- User Details -->
+            <div class="col-md-8">
+
+                <div class="mb-3">
+
+                    <label class="form-label">
+                        Full Name
+                    </label>
+
+                    <input
+                        type="text"
+                        name="fullname"
+                        class="form-control"
+                        value="<?= htmlspecialchars($fullname) ?>"
+                        required>
+
+                </div>
+
+                <div class="mb-3">
+
+                    <label class="form-label">
+                        Email Address
+                    </label>
+
+                    <input
+                        type="email"
+                        class="form-control"
+                        value="<?= htmlspecialchars($email) ?>"
+                        readonly>
+
+                    <small class="text-secondary">
+                        Email cannot be changed.
+                    </small>
+
+                </div>
+
+                <div class="mb-3">
+
+                    <label class="form-label">
+                        Phone Number
+                    </label>
+
+                    <input
+                        type="text"
+                        name="phone"
+                        class="form-control"
+                        value="<?= htmlspecialchars($phone) ?>">
+
+                </div>
+
+                <button
+                    type="submit"
+                    name="update_profile"
+                    class="btn btn-warning px-5">
+
+                    <i class="bi bi-check-circle me-2"></i>
+
+                    Save Changes
+
                 </button>
-            </form>
+
+            </div>
+
+        </div>
+
+    </form>
+
+</div>
+
+<div class="glass">
+
+    <h4 class="fw-bold mb-4">
+        <i class="bi bi-palette-fill text-warning me-2"></i>
+        Appearance
+    </h4>
+
+    <div class="d-flex justify-content-between align-items-center">
+
+        <div>
+
+            <h5 class="mb-1">Theme</h5>
+
+            <small class="text-secondary">
+                Switch between Light and Dark mode
+            </small>
+
+        </div>
+
+        <button
+            id="themeToggle"
+            class="btn btn-warning">
+
+            <i class="bi bi-moon-stars-fill me-2"></i>
+
+            Dark Mode
+
+        </button>
+
+    </div>
+
+</div>
+<!-- ===========================
+        CHANGE PASSWORD
+=========================== -->
+
+<div class="glass">
+
+    <h4 class="fw-bold mb-4">
+        <i class="bi bi-shield-lock-fill text-warning me-2"></i>
+        Change Password
+    </h4>
+
+    <form method="POST">
+
+        <div class="row">
+
+            <div class="col-md-12 mb-3">
+
+                <label class="form-label">
+                    Current Password
+                </label>
+
+                <div class="input-group">
+
+                    <input
+                        type="password"
+                        name="current_password"
+                        id="current_password"
+                        class="form-control"
+                        required>
+
+                    <button
+                        class="btn btn-outline-secondary"
+                        type="button"
+                        onclick="togglePassword('current_password', this)">
+
+                        <i class="bi bi-eye"></i>
+
+                    </button>
+
+                </div>
+
+            </div>
+
+            <div class="col-md-6 mb-3">
+
+                <label class="form-label">
+                    New Password
+                </label>
+
+                <div class="input-group">
+
+                    <input
+                        type="password"
+                        name="new_password"
+                        id="new_password"
+                        class="form-control"
+                        minlength="6"
+                        required>
+
+                    <button
+                        class="btn btn-outline-secondary"
+                        type="button"
+                        onclick="togglePassword('new_password', this)">
+
+                        <i class="bi bi-eye"></i>
+
+                    </button>
+
+                </div>
+
+            </div>
+
+            <div class="col-md-6 mb-3">
+
+                <label class="form-label">
+                    Confirm New Password
+                </label>
+
+                <div class="input-group">
+
+                    <input
+                        type="password"
+                        name="confirm_password"
+                        id="confirm_password"
+                        class="form-control"
+                        minlength="6"
+                        required>
+
+                    <button
+                        class="btn btn-outline-secondary"
+                        type="button"
+                        onclick="togglePassword('confirm_password', this)">
+
+                        <i class="bi bi-eye"></i>
+
+                    </button>
+
+                </div>
+
+            </div>
+
+        </div>
+
+        <div class="alert alert-info mt-2">
+
+            <i class="bi bi-info-circle me-2"></i>
+
+            Password must contain at least
+            <strong>6 characters</strong>.
+
+        </div>
+
+        <button
+            type="submit"
+            name="change_password"
+            class="btn btn-danger px-5">
+
+            <i class="bi bi-key-fill me-2"></i>
+
+            Update Password
+
+        </button>
+
+    </form>
+
+</div>
+<!-- ===========================
+        ACCOUNT INFORMATION
+=========================== -->
+
+<div class="glass">
+
+    <h4 class="fw-bold mb-4">
+        <i class="bi bi-info-circle-fill text-warning me-2"></i>
+        Account Information
+    </h4>
+
+    <div class="row g-4">
+
+        <div class="col-md-6">
+
+            <div class="border rounded p-3 h-100">
+
+                <h6 class="text-secondary">
+                    User ID
+                </h6>
+
+                <h5 class="fw-bold">
+                    #<?= $user_id ?>
+                </h5>
+
+            </div>
+
+        </div>
+
+        <div class="col-md-6">
+
+            <div class="border rounded p-3 h-100">
+
+                <h6 class="text-secondary">
+                    Member Since
+                </h6>
+
+                <h5 class="fw-bold">
+                    <?= $member_since ?>
+                </h5>
+
+            </div>
+
+        </div>
+
+        <div class="col-md-6">
+
+            <div class="border rounded p-3 h-100">
+
+                <h6 class="text-secondary">
+                    Registered Email
+                </h6>
+
+                <h5 class="fw-bold text-break">
+                    <?= htmlspecialchars($email) ?>
+                </h5>
+
+            </div>
+
+        </div>
+
+        <div class="col-md-6">
+
+            <div class="border rounded p-3 h-100">
+
+                <h6 class="text-secondary">
+                    Phone Number
+                </h6>
+
+                <h5 class="fw-bold">
+                    <?= !empty($phone) ? htmlspecialchars($phone) : 'Not Added' ?>
+                </h5>
+
+            </div>
+
         </div>
 
     </div>
-</div>
-```
 
 </div>
+
+
+
+<!-- ===========================
+        QUICK ACTIONS
+=========================== -->
+
+<div class="glass">
+
+    <h4 class="fw-bold mb-4">
+        <i class="bi bi-lightning-fill text-warning me-2"></i>
+        Quick Actions
+    </h4>
+
+    <div class="row g-3">
+
+        <div class="col-lg-3 col-md-6">
+
+            <a href="dashboard.php"
+               class="btn btn-primary w-100 py-3">
+
+                <i class="bi bi-speedometer2 me-2"></i>
+
+                Dashboard
+
+            </a>
+
+        </div>
+
+        <div class="col-lg-3 col-md-6">
+
+            <a href="profile.php"
+               class="btn btn-success w-100 py-3">
+
+                <i class="bi bi-person-circle me-2"></i>
+
+                Profile
+
+            </a>
+
+        </div>
+
+        <div class="col-lg-3 col-md-6">
+
+            <a href="reports.php"
+               class="btn btn-warning w-100 py-3">
+
+                <i class="bi bi-bar-chart-fill me-2"></i>
+
+                Reports
+
+            </a>
+
+        </div>
+
+        <div class="col-lg-3 col-md-6">
+
+            <a href="logout.php"
+               class="btn btn-danger w-100 py-3"
+               onclick="return confirm('Are you sure you want to logout?');">
+
+                <i class="bi bi-box-arrow-right me-2"></i>
+
+                Logout
+
+            </a>
+
+        </div>
+
+    </div>
+
+</div>
+<!-- ===========================
+        FOOTER
+=========================== -->
+
+<footer class="text-center text-secondary py-4 mt-5">
+
+    <hr class="border-secondary">
+
+    <p class="mb-0">
+
+        © <?= date('Y') ?> <strong>Finora</strong> | Personal Expense Manager
+
+    </p>
+
+</footer>
+
+</div>
+<!-- End Main -->
+
+
+
+<!-- Bootstrap JS -->
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
-<script>
-const themeSelect = document.getElementById('themeSelect');
 
-themeSelect.addEventListener('change', function () {
-    if (this.value === 'light') {
-        document.documentElement.style.setProperty('--bg', '#f4f7fb');
-        document.documentElement.style.setProperty('--text', '#0f172a');
-        document.documentElement.style.setProperty('--panel', 'rgba(255,255,255,0.92)');
-        document.documentElement.style.setProperty('--input-bg', '#ffffff');
-        document.documentElement.style.setProperty('--input-border', '#cbd5e1');
-    } else {
-        document.documentElement.style.setProperty('--bg', '#0b1020');
-        document.documentElement.style.setProperty('--text', '#eef2ff');
-        document.documentElement.style.setProperty('--panel', '#121933cc');
-        document.documentElement.style.setProperty('--input-bg', '#0f172a');
-        document.documentElement.style.setProperty('--input-border', '#334155');
-    }
-});
+
+<!-- ===========================
+        MOBILE SIDEBAR
+=========================== -->
+
+<script>
+
+function toggleSidebar(){
+
+    document.getElementById("sidebar").classList.toggle("active");
+
+}
+
 </script>
 
 
+
+<!-- ===========================
+        SHOW / HIDE PASSWORD
+=========================== -->
+
+<script>
+
+function togglePassword(id, button){
+
+    const input = document.getElementById(id);
+
+    const icon = button.querySelector("i");
+
+    if(input.type === "password"){
+
+        input.type = "text";
+
+        icon.classList.remove("bi-eye");
+
+        icon.classList.add("bi-eye-slash");
+
+    }else{
+
+        input.type = "password";
+
+        icon.classList.remove("bi-eye-slash");
+
+        icon.classList.add("bi-eye");
+
+    }
+
+}
+
+</script>
+
+
+
+<!-- ===========================
+        AUTO HIDE ALERTS
+=========================== -->
+
+<script>
+
+setTimeout(function(){
+
+    document.querySelectorAll(".alert").forEach(function(alert){
+
+        alert.style.transition=".5s";
+
+        alert.style.opacity="0";
+
+        setTimeout(function(){
+
+            alert.remove();
+
+        },500);
+
+    });
+
+},3000);
+
+</script>
+
+
+
+<!-- ===========================
+        ACTIVE MENU
+=========================== -->
+
+<script>
+
+const currentPage = window.location.pathname.split("/").pop();
+
+document.querySelectorAll(".menu a").forEach(function(link){
+
+    if(link.getAttribute("href") === currentPage){
+
+        link.classList.add("active");
+
+    }
+
+});
+
+</script>
+
+
+
+<!-- ===========================
+        CARD HOVER EFFECT
+=========================== -->
+
+<script>
+
+document.querySelectorAll(".glass").forEach(function(card){
+
+    card.addEventListener("mouseenter",function(){
+
+        card.style.transform="translateY(-6px)";
+
+        card.style.transition=".3s";
+
+    });
+
+    card.addEventListener("mouseleave",function(){
+
+        card.style.transform="translateY(0px)";
+
+    });
+
+});
+
+</script>
+
+
+
+<!-- ===========================
+        SMOOTH PAGE LOAD
+=========================== -->
+
+<script>
+
+document.body.style.opacity="0";
+
+window.addEventListener("load",function(){
+
+    document.body.style.transition=".4s";
+
+    document.body.style.opacity="1";
+
+});
+
+</script>
 
 </body>
 </html>

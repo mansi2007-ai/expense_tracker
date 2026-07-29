@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 
 <html lang="en">
@@ -285,6 +287,71 @@ body{
     width:280px;height:280px;border-radius:50%;
     background:radial-gradient(circle, rgba(96,165,250,.22), transparent 70%);
     top:-120px; right:-80px;
+}
+
+
+/* CONTACT SECTION */
+
+.glass{
+
+background:rgba(255,255,255,.08);
+
+backdrop-filter:blur(18px);
+
+border:1px solid rgba(255,255,255,.10);
+
+border-radius:20px;
+
+box-shadow:0 15px 35px rgba(0,0,0,.25);
+
+}
+
+.icon-circle{
+
+width:55px;
+
+height:55px;
+
+border-radius:50%;
+
+display:flex;
+
+align-items:center;
+
+justify-content:center;
+
+font-size:22px;
+
+color:white;
+
+}
+
+#contact .form-control{
+
+background:rgba(255,255,255,.06);
+
+border:1px solid rgba(255,255,255,.10);
+
+color:#fff;
+
+}
+
+#contact .form-control::placeholder{
+
+color:#b8c2d1;
+
+}
+
+#contact .form-control:focus{
+
+background:rgba(255,255,255,.08);
+
+border-color:#f59e0b;
+
+box-shadow:none;
+
+color:#fff;
+
 }
 
 footer{
@@ -687,8 +754,243 @@ footer{
 
   </div>
 
+  <!-- ===========================
+        CONTACT US
+=========================== -->
+
+<section id="contact" class="py-5">
+
+    <div class="container">
+
+        <div class="text-center mb-5">
+
+            <h2 class="fw-bold text-white">
+                <i class="bi bi-envelope-fill text-warning me-2"></i>
+                Contact Us
+            </h2>
+
+            <p class="text-secondary">
+                Have questions or feedback? We'd love to hear from you.
+            </p>
+
+        </div>
+
+        <div class="row g-4"> 
+
+            <!-- Contact Information -->
+
+            <div class="col-lg-4">
+
+                <div class="glass h-100 p-4">
+
+                    <h4 class="fw-bold mb-4 text-warning">
+
+                        Get In Touch
+
+                 <h4 class="fw-bold mb-4 text-warning">
+    <i class="bi bi-person-badge-fill me-2"></i>
+    Developer
+</h4>
+
+<div class="mb-4">
+
+    <div class="d-flex align-items-center">
+
+        <div class="icon-circle bg-warning me-3">
+
+            <i class="bi bi-person-fill text-dark"></i>
+
+        </div>
+
+        <div>
+
+            <strong>Developer</strong>
+
+            <p class="mb-0 text-secondary">
+                Mansi Patil
+            </p>
+
+        </div>
+
+    </div>
+
+</div>
+
+<div class="mb-4">
+
+    <div class="d-flex align-items-center">
+
+        <div class="icon-circle bg-success me-3">
+
+            <i class="bi bi-envelope-fill"></i>
+
+        </div>
+
+        <div>
+
+            <strong>Email</strong>
+
+            <p class="mb-0 text-secondary">
+                finorasupport@gmail.com
+            </p>
+
+        </div>
+
+    </div>
+
+</div>
+
+<div class="mb-4">
+
+    <div class="d-flex align-items-center">
+
+        <div class="icon-circle bg-primary me-3">
+
+            <i class="bi bi-telephone-fill"></i>
+
+        </div>
+
+        <div>
+
+            <strong>Phone</strong>
+
+            <p class="mb-0 text-secondary">
+                +91 8983901511
+            </p>
+
+        </div>
+
+    </div>
+
+</div>
+
+<div>
+
+    <div class="d-flex align-items-center">
+
+        <div class="icon-circle bg-danger me-3">
+
+            <i class="bi bi-geo-alt-fill"></i>
+
+        </div>
+
+        <div>
+
+            <strong>Location</strong>
+
+            <p class="mb-0 text-secondary">
+                Pune, Maharashtra, India
+            </p>
+
+        </div>
+
+    </div>
+
+</div>
+</div>
+</div>
+            <!-- Contact Form -->
+
+            <div class="col-lg-8">
+
+                <div class="glass p-4">
+
+                    <h4 class="fw-bold mb-4 text-warning">
+
+                        Send us a Message
+
+                    </h4>
+
+                    <form method="POST">
+
+                        <div class="row">
+
+                            <div class="col-md-6 mb-3">
+
+                                <label class="form-label text-light">
+                                    Full Name
+                                </label>
+
+                                <input
+                                    type="text"
+                                    name="name"
+                                    class="form-control"
+                                    placeholder="Enter your name"
+                                    required>
+
+                            </div>
+
+                            <div class="col-md-6 mb-3">
+
+                                <label class="form-label text-light">
+                                    Email Address
+                                </label>
+
+                                <input
+                                    type="email"
+                                    name="email"
+                                    class="form-control"
+                                    placeholder="Enter your email"
+                                    required>
+
+                            </div>
+
+                        </div>
+
+                        <div class="mb-3">
+
+                            <label class="form-label text-light">
+                                Subject
+                            </label>
+
+                            <input
+                                type="text"
+                                name="subject"
+                                class="form-control"
+                                placeholder="Enter subject"
+                                required>
+
+                        </div>
+
+                        <div class="mb-4">
+
+                            <label class="form-label text-light">
+                                Message
+                            </label>
+
+                            <textarea
+                                name="message"
+                                rows="6"
+                                class="form-control"
+                                placeholder="Write your message here..."
+                                required></textarea>
+
+                        </div>
+
+                        <button
+                            type="submit"
+                            class="btn btn-warning px-5">
+
+                            <i class="bi bi-send-fill me-2"></i>
+
+                            Send Message
+
+                        </button>
+
+                    </form>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
   <div class="container text-center small mt-3">
-    © 2026 ExpenseTracker. All rights reserved.
+    © 2026  Finora-ExpenseTracker. All rights reserved.
   </div>
 </footer>
 

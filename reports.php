@@ -2,635 +2,1374 @@
 session_start();
 include 'db.php';
 
+// =============================
+// LOGIN CHECK
+// =============================
 if (!isset($_SESSION['user_id'])) {
-    header('Location: login.php');
+    header("Location: login.php");
     exit();
 }
 
 $user_id = $_SESSION['user_id'];
-$fullname = $_SESSION['fullname'];
+$fullname = $_SESSION['fullname'] ?? 'User';
 
-// Selected month
-$selected_month = $_GET['month'] ?? date('Y-m');
-$year  = date('Y', strtotime($selected_month));
-$month = date('m', strtotime($selected_month));
 
-// ===== TOTALS =====
-$income_q = $conn->query("SELECT COALESCE(SUM(amount),0) total
-                          FROM income
-                          WHERE user_id=$user_id
-                          AND MONTH(income_date)=$month
-                          AND YEAR(income_date)=$year");
-$total_income = $income_q->fetch_assoc()['total'];
+// =============================
+// DATE FILTER
+// =============================
 
-$expense_q = $conn->query("SELECT COALESCE(SUM(amount),0) total
-                           FROM expenses
-                           WHERE user_id=$user_id
-                           AND MONTH(expense_date)=$month
-                           AND YEAR(expense_date)=$year");
-$total_expense = $expense_q->fetch_assoc()['total'];
+$from_date = $_GET['from'] ?? '';
+$to_date   = $_GET['to'] ?? '';
 
-$balance = $total_income - $total_expense;
-$savings_rate = ($total_income > 0) ? round(($balance / $total_income) * 100) : 0;
+$income_where = "WHERE user_id=?";
+$expense_where = "WHERE user_id=?";
 
-// ===== CATEGORY DATA =====
-$cat_q = $conn->query("
-    SELECT c.category_name, SUM(e.amount) AS total
-    FROM expenses e
-    JOIN categories c ON e.category_id = c.category_id
-    WHERE e.user_id=$user_id
-      AND MONTH(e.expense_date)=$month
-      AND YEAR(e.expense_date)=$year
-    GROUP BY c.category_name
-    ORDER BY total DESC
-");
+$income_types = "i";
+$expense_types = "i";
 
-$labels = [];
-$values = [];
-$category_rows = [];
+$income_params = [$user_id];
+$expense_params = [$user_id];
 
-while($row = $cat_q->fetch_assoc()){
-    $labels[] = $row['category_name'];
-    $values[] = $row['total'];
-    $category_rows[] = $row;
+if (!empty($from_date) && !empty($to_date)) {
+
+    $income_where .= " AND income_date BETWEEN ? AND ?";
+    $expense_where .= " AND expense_date BETWEEN ? AND ?";
+
+    $income_types .= "ss";
+    $expense_types .= "ss";
+
+    $income_params[] = $from_date;
+    $income_params[] = $to_date;
+
+    $expense_params[] = $from_date;
+    $expense_params[] = $to_date;
 }
 
-// ===== TOP CATEGORY =====
-$top_category = $category_rows[0]['category_name'] ?? 'N/A';
-$top_amount   = $category_rows[0]['total'] ?? 0;
+
+// =============================
+// TOTAL INCOME
+// =============================
+
+$sql = "SELECT COALESCE(SUM(amount),0) AS total
+        FROM income
+        $income_where";
+
+$stmt = $conn->prepare($sql);
+$stmt->bind_param($income_types, ...$income_params);
+$stmt->execute();
+
+$result = $stmt->get_result();
+$total_income = $result->fetch_assoc()['total'];
+
+$stmt->close();
+
+
+// =============================
+// TOTAL EXPENSE
+// =============================
+
+$sql = "SELECT COALESCE(SUM(amount),0) AS total
+        FROM expenses
+        $expense_where";
+
+$stmt = $conn->prepare($sql);
+$stmt->bind_param($expense_types, ...$expense_params);
+$stmt->execute();
+
+$result = $stmt->get_result();
+$total_expense = $result->fetch_assoc()['total'];
+
+$stmt->close();
+
+
+// =============================
+// CURRENT BALANCE
+// =============================
+
+$current_balance = $total_income - $total_expense;
+
+
+// =============================
+// THIS MONTH INCOME
+// =============================
+
+$stmt = $conn->prepare("
+SELECT COALESCE(SUM(amount),0) AS total
+FROM income
+WHERE user_id=?
+AND MONTH(income_date)=MONTH(CURDATE())
+AND YEAR(income_date)=YEAR(CURDATE())
+");
+
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
+
+$this_month_income = $stmt
+->get_result()
+->fetch_assoc()['total'];
+
+$stmt->close();
+
+
+// =============================
+// THIS MONTH EXPENSE
+// =============================
+
+$stmt = $conn->prepare("
+SELECT COALESCE(SUM(amount),0) AS total
+FROM expenses
+WHERE user_id=?
+AND MONTH(expense_date)=MONTH(CURDATE())
+AND YEAR(expense_date)=YEAR(CURDATE())
+");
+
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
+
+$this_month_expense = $stmt
+->get_result()
+->fetch_assoc()['total'];
+
+$stmt->close();
+
+
+// =============================
+// EXPENSE CATEGORY REPORT
+// =============================
+
+$stmt = $conn->prepare("
+SELECT category,
+SUM(amount) AS total
+FROM expenses
+WHERE user_id=?
+GROUP BY category
+ORDER BY total DESC
+");
+
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
+
+$category_result = $stmt->get_result();
+
+$category_labels = [];
+$category_amounts = [];
+
+while($row = $category_result->fetch_assoc()){
+
+    $category_labels[] = $row['category'];
+    $category_amounts[] = $row['total'];
+
+}
+
+$stmt->close();
+
+
+// =============================
+// MONTHLY REPORT
+// =============================
+
+$stmt = $conn->prepare("
+SELECT
+MONTH(expense_date) AS month,
+SUM(amount) AS total
+FROM expenses
+WHERE user_id=?
+AND YEAR(expense_date)=YEAR(CURDATE())
+GROUP BY MONTH(expense_date)
+ORDER BY MONTH(expense_date)
+");
+
+$stmt->bind_param("i",$user_id);
+$stmt->execute();
+
+$monthly_result = $stmt->get_result();
+
+$months = [];
+$monthly_expense = [];
+
+while($row = $monthly_result->fetch_assoc()){
+
+    $months[] = date("M", mktime(0,0,0,$row['month'],1));
+    $monthly_expense[] = $row['total'];
+
+}
+
+$stmt->close();
+
+
+// =============================
+// RECENT INCOME
+// =============================
+
+$income_result = $conn->query("
+SELECT
+income_date,
+source,
+amount
+FROM income
+WHERE user_id=$user_id
+ORDER BY income_date DESC
+LIMIT 5
+");
+
+
+// =============================
+// RECENT EXPENSE
+// =============================
+
+$expense_result = $conn->query("
+SELECT
+expense_date,
+category,
+description,
+amount
+FROM expenses
+WHERE user_id=$user_id
+ORDER BY expense_date DESC
+LIMIT 5
+");
+
 ?>
-
 <!DOCTYPE html>
-
 <html lang="en">
+
 <head>
+
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Creative Reports - Finora</title>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Finora • Reports</title>
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
-:root{
-    --bg:#0b1020;
-    --panel:#121933cc;
-    --line:#2a3566;
-    --text:#eef2ff;
-    --muted:#a5b4fc;
-    --blue:#5b8cff;
-    --green:#22c55e;
-    --red:#ef4444;
-    --yellow:#f59e0b;
-    --cyan:#06b6d4;
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
 }
 
 body{
-    background: radial-gradient(circle at top left,#1d4ed8 0%,#0b1020 35%,#070b16 100%);
-    color:var(--text);
-    font-family:'Segoe UI',sans-serif;
+
+    font-family:'Poppins',sans-serif;
+
+    background:
+    radial-gradient(circle at top left,#312e81 0%,transparent 30%),
+    radial-gradient(circle at bottom right,#7c3aed 0%,transparent 35%),
+    #0b1020;
+
+    color:#fff;
+
     min-height:100vh;
+
 }
 
-.sidebar{
-    width:250px;
-    min-height:100vh;
-    position:fixed;
-    background:#0f172acc;
-    backdrop-filter: blur(18px);
-    border-right:1px solid var(--line);
+
+/* ===========================
+        Scrollbar
+=========================== */
+
+::-webkit-scrollbar{
+
+    width:8px;
+
 }
 
-.sidebar .brand{
-    padding:24px 20px;
-    font-size:24px;
-    font-weight:700;
+::-webkit-scrollbar-thumb{
+
+    background:#7c3aed;
+
+    border-radius:20px;
+
 }
 
-.sidebar a{
-    color:#c7d2fe;
-    text-decoration:none;
-    display:block;
-    padding:12px 18px;
-    margin:6px 12px;
-    border-radius:14px;
-    transition:.2s ease;
-}
 
-.sidebar a:hover,
-.sidebar a.active{
-    background:linear-gradient(135deg,#2563eb,#3b82f6);
-    color:white;
-    transform:translateX(4px);
-}
+/* ===========================
+        Glass Card
+=========================== */
 
-.main{ margin-left:250px; }
+.card-glass{
 
-.topbar{
-    background:#0f172acc;
-    backdrop-filter: blur(16px);
-    border-bottom:1px solid var(--line);
-    padding:16px 24px;
-}
+    background:rgba(18,25,51,.75);
 
-.glass{
-    background:var(--panel);
     border:1px solid rgba(255,255,255,.08);
-    backdrop-filter: blur(16px);
-    border-radius:26px;
-    box-shadow:0 12px 40px rgba(0,0,0,.28);
+
+    backdrop-filter:blur(18px);
+
+    border-radius:24px;
+
+    box-shadow:0 20px 45px rgba(0,0,0,.35);
+
 }
 
-.hero{
-    position:relative;
-    overflow:hidden;
-    padding:28px;
+
+/* ===========================
+        Summary Cards
+=========================== */
+
+.summary{
+
+    padding:25px;
+
+    border-radius:24px;
+
+    color:#fff;
+
+    transition:.35s;
+
+    box-shadow:0 18px 35px rgba(0,0,0,.25);
+
 }
 
-.hero::before{
-    content:'';
-    position:absolute;
-    width:280px;height:280px;
-    border-radius:50%;
-    background:radial-gradient(circle,#60a5fa55,transparent 70%);
-    top:-80px; right:-40px;
+.summary:hover{
+
+    transform:translateY(-6px);
+
 }
 
-.kpi{
-    padding:22px;
-    position:relative;
-    overflow:hidden;
-    min-height:150px;
-    transition:transform .25s ease;
+.s1{
+
+    background:linear-gradient(135deg,#16a34a,#22c55e);
+
 }
 
-.kpi:hover{ transform:translateY(-6px); }
+.s2{
 
-.kpi .icon{
-    position:absolute;
-    right:18px;
-    top:18px;
-    font-size:42px;
-    opacity:.18;
+    background:linear-gradient(135deg,#dc2626,#ef4444);
+
 }
 
-.kpi-income{ background:linear-gradient(135deg,#0f5132,#16a34a); }
-.kpi-expense{ background:linear-gradient(135deg,#7f1d1d,#dc2626); }
-.kpi-balance{ background:linear-gradient(135deg,#1e3a8a,#2563eb); }
-.kpi-savings{ background:linear-gradient(135deg,#78350f,#f59e0b); }
+.s3{
 
-.ring-wrap{
-    width:170px;height:170px;
-    position:relative;margin:auto;
+    background:linear-gradient(135deg,#2563eb,#3b82f6);
+
 }
 
-.ring{
-    width:170px;height:170px;border-radius:50%;
-    background:conic-gradient(var(--green) calc(var(--p)*1%), rgba(255,255,255,.08) 0);
-    display:grid;place-items:center;
+.s4{
+
+    background:linear-gradient(135deg,#7c3aed,#9333ea);
+
 }
 
-.ring::before{
-    content:'';
-    width:128px;height:128px;border-radius:50%;
-    background:#0f172a;border:1px solid var(--line);
+
+/* ===========================
+        Charts
+=========================== */
+
+.chart-card{
+
+    padding:25px;
+
+    min-height:420px;
+
 }
 
-.ring-center{
-    position:absolute; inset:0;
-    display:grid; place-items:center;
-    text-align:center;
+.chart-card canvas{
+
+    max-height:320px;
+
 }
 
-.insight{
-    border-left:4px solid var(--cyan);
-    padding:14px 16px;
-    background:rgba(6,182,212,.08);
+
+/* ===========================
+        Forms
+=========================== */
+
+.form-control,
+.form-select{
+
+    background:#111827;
+
+    color:#fff;
+
+    border:1px solid #374151;
+
     border-radius:14px;
+
+    padding:12px;
+
 }
 
-.table-darkish{
-    --bs-table-bg: transparent;
-    --bs-table-color: var(--text);
-    --bs-table-border-color: #243056;
-    --bs-table-striped-bg: rgba(255,255,255,.03);
-    --bs-table-hover-bg: rgba(255,255,255,.05);
-}
+.form-control:focus,
+.form-select:focus{
 
-.form-control{
-    background:#0f172a;
-    border:1px solid #334155;
+    background:#111827;
+
     color:#fff;
-    border-radius:12px;
+
+    border-color:#f59e0b;
+
+    box-shadow:none;
+
 }
 
-.form-control:focus{
-    background:#0f172a;
+
+/* ===========================
+        Buttons
+=========================== */
+
+.btn-warning{
+
+    border:none;
+
+    color:#111827;
+
+    font-weight:600;
+
+    border-radius:50px;
+
+}
+
+.btn-outline-light{
+
+    border-radius:50px;
+
+}
+
+
+/* ===========================
+        Tables
+=========================== */
+
+.table{
+
     color:#fff;
-    border-color:#60a5fa;
-    box-shadow:0 0 0 .2rem rgba(96,165,250,.15);
+
 }
 
-@media print{
-    .sidebar,.topbar,.no-print{ display:none; }
-    .main{ margin:0; }
-    body{ background:#fff; color:#000; }
-    .glass{ background:#fff; border:1px solid #ddd; box-shadow:none; }
+.table-dark{
+
+    --bs-table-bg:transparent;
+
+    --bs-table-border-color:rgba(255,255,255,.08);
+
 }
 
-@media (max-width: 992px){
-    .sidebar{ position:relative; width:100%; min-height:auto; }
-    .main{ margin-left:0; }
+.table tbody tr:hover{
+
+    background:rgba(255,255,255,.05);
+
 }
+
+
+/* ===========================
+        Badges
+=========================== */
+
+.badge{
+
+    font-size:.8rem;
+
+    padding:.55rem .8rem;
+
+    border-radius:20px;
+
+}
+
+
+/* ===========================
+        Headings
+=========================== */
+
+.page-title{
+
+    font-size:2rem;
+
+    font-weight:700;
+
+}
+
+.subtitle{
+
+    color:#94a3b8;
+
+}
+
+
+/* ===========================
+        Footer
+=========================== */
+
+footer{
+
+    color:#94a3b8;
+
+}
+
+
+/* ===========================
+        Responsive
+=========================== */
+
+@media(max-width:768px){
+
+.page-title{
+
+    font-size:1.5rem;
+
+}
+
+.summary{
+
+    margin-bottom:20px;
+
+}
+
+.chart-card{
+
+    min-height:350px;
+
+}
+
+}
+
 </style>
 
 </head>
+
 <body>
 
-<!-- SIDEBAR -->
+<div class="container py-4">
+<!-- =======================================
+            PAGE HEADER
+======================================= -->
 
-<div class="sidebar">
-    <div class="brand"><i class="bi bi-wallet2 me-2"></i>Finora</div>
+<div class="d-flex justify-content-between align-items-center flex-wrap mb-4">
 
-```
-<a href="dashboard.php"><i class="bi bi-speedometer2 me-2"></i>Dashboard</a>
-<a href="add_income.php"><i class="bi bi-plus-circle me-2"></i>Add Income</a>
-<a href="add_expense.php"><i class="bi bi-dash-circle me-2"></i>Add Expense</a>
-<a href="transactions.php"><i class="bi bi-arrow-left-right me-2"></i>Transactions</a>
-<a href="reports.php" class="active"><i class="bi bi-bar-chart me-2"></i>Reports</a>
-<a href="logout.php" class="text-danger"><i class="bi bi-box-arrow-right me-2"></i>Logout</a>
-```
-
-</div>
-
-<!-- MAIN -->
-
-<div class="main">
-
-```
-<div class="topbar d-flex justify-content-between align-items-center">
     <div>
-        <h3 class="mb-0">Financial Analytics</h3>
-        <small class="text-secondary">Executive summary and spending intelligence</small>
+
+        <h2 class="page-title">
+
+            <i class="bi bi-bar-chart-fill text-warning me-2"></i>
+
+            Financial Reports
+
+        </h2>
+
+        <p class="subtitle mb-0">
+
+            Welcome,
+            <strong><?= htmlspecialchars($fullname) ?></strong>
+
+        </p>
+
     </div>
 
-    <div class="d-flex align-items-center gap-3">
-        <span class="fw-semibold"><?php echo htmlspecialchars($fullname); ?></span>
-        <img src="https://ui-avatars.com/api/?name=<?php echo urlencode($fullname); ?>&background=2563eb&color=fff"
-             width="42" height="42" class="rounded-circle">
+    <div class="mt-3 mt-md-0">
+
+        <a href="dashboard.php" class="btn btn-outline-light px-4">
+
+            <i class="bi bi-arrow-left-circle me-2"></i>
+
+            Dashboard
+
+        </a>
+
     </div>
+
 </div>
 
-<div class="container-fluid p-4">
 
-    <!-- HERO -->
-    <div class="glass hero mb-4">
-        <div class="d-flex flex-wrap align-items-center gap-3">
-            <div>
-                <div class="text-uppercase text-info fw-semibold small">Executive Financial Report</div>
-                <h2 class="fw-bold mb-2"><?php echo date('F Y', strtotime($selected_month)); ?> Performance</h2>
-                <p class="text-light-emphasis mb-0">
-                    Income of ₹ <?php echo number_format($total_income,0); ?> and expenses of
-                    ₹ <?php echo number_format($total_expense,0); ?> generated a net balance of
-                    ₹ <?php echo number_format($balance,0); ?>.
-                </p>
-            </div>
+<!-- =======================================
+            DATE FILTER
+======================================= -->
 
-            <div class="ms-auto d-flex gap-2 no-print">
-                <button class="btn btn-outline-light" onclick="window.print()">
-                    <i class="bi bi-printer me-2"></i>Print
-                </button>
-                <button class="btn btn-primary" onclick="exportCSV()">
-                    <i class="bi bi-download me-2"></i>Export CSV
-                </button>
-            </div>
-        </div>
-    </div>
+<div class="card-glass p-4 mb-4">
 
-    <!-- FILTER -->
-    <div class="glass p-4 mb-4 no-print">
-        <form method="GET" class="row g-3 align-items-end">
+    <form method="GET">
+
+        <div class="row align-items-end g-3">
+
             <div class="col-md-4">
-                <label class="form-label">Select Month</label>
-                <input type="month" name="month" value="<?php echo $selected_month; ?>" class="form-control">
+
+                <label class="form-label">
+
+                    From Date
+
+                </label>
+
+                <input
+                    type="date"
+                    name="from"
+                    class="form-control"
+                    value="<?= htmlspecialchars($from_date) ?>"
+                >
+
+            </div>
+
+            <div class="col-md-4">
+
+                <label class="form-label">
+
+                    To Date
+
+                </label>
+
+                <input
+                    type="date"
+                    name="to"
+                    class="form-control"
+                    value="<?= htmlspecialchars($to_date) ?>"
+                >
+
             </div>
 
             <div class="col-md-4 d-grid">
-                <button class="btn btn-primary">
-                    <i class="bi bi-funnel me-2"></i>Apply Filter
+
+                <button class="btn btn-warning">
+
+                    <i class="bi bi-funnel-fill me-2"></i>
+
+                    Generate Report
+
                 </button>
+
             </div>
 
-            <div class="col-md-4 text-md-end">
-                <div class="text-secondary small">Report generated on</div>
-                <div class="fw-semibold"><?php echo date('d M Y, h:i A'); ?></div>
-            </div>
-        </form>
-    </div>
-
-    <!-- KPI CARDS -->
-    <div class="row g-4 mb-4">
-        <div class="col-lg-3 col-md-6">
-            <div class="glass kpi kpi-income">
-                <i class="bi bi-arrow-down-left-circle icon"></i>
-                <div class="text-white-50">Total Income</div>
-                <h2 class="fw-bold mt-2">₹ <?php echo number_format($total_income,2); ?></h2>
-                <small class="text-white-50">All income sources</small>
-            </div>
         </div>
 
-        <div class="col-lg-3 col-md-6">
-            <div class="glass kpi kpi-expense">
-                <i class="bi bi-arrow-up-right-circle icon"></i>
-                <div class="text-white-50">Total Expenses</div>
-                <h2 class="fw-bold mt-2">₹ <?php echo number_format($total_expense,2); ?></h2>
-                <small class="text-white-50">Operational spending</small>
-            </div>
-        </div>
+    </form>
 
-        <div class="col-lg-3 col-md-6">
-            <div class="glass kpi kpi-balance">
-                <i class="bi bi-wallet2 icon"></i>
-                <div class="text-white-50">Net Balance</div>
-                <h2 class="fw-bold mt-2">₹ <?php echo number_format($balance,2); ?></h2>
-                <small class="text-white-50">Income minus expenses</small>
-            </div>
-        </div>
+</div>
 
-        <div class="col-lg-3 col-md-6">
-            <div class="glass kpi kpi-savings">
-                <i class="bi bi-piggy-bank icon"></i>
-                <div class="text-white-50">Savings Rate</div>
-                <h2 class="fw-bold mt-2"><?php echo $savings_rate; ?>%</h2>
-                <small class="text-white-50">Monthly retention ratio</small>
-            </div>
-        </div>
-    </div>
 
-    <!-- CHARTS -->
-    <div class="row g-4 mb-4">
 
-        <div class="col-xl-8">
-            <div class="glass p-4 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
-                        <h5 class="mb-0">Income vs Expense Trend</h5>
-                        <small class="text-secondary">Comparative monthly movement</small>
-                    </div>
-                    <span class="badge text-bg-primary">FY <?php echo $year; ?></span>
+<!-- =======================================
+            SUMMARY CARDS
+======================================= -->
+
+<div class="row g-4 mb-4">
+
+
+    <!-- TOTAL INCOME -->
+
+    <div class="col-lg-3 col-md-6">
+
+        <div class="summary s1">
+
+            <div class="d-flex justify-content-between">
+
+                <div>
+
+                    <small class="text-uppercase opacity-75">
+
+                        Total Income
+
+                    </small>
+
+                    <h3 class="fw-bold mt-2">
+
+                        ₹<?= number_format($total_income,2) ?>
+
+                    </h3>
+
                 </div>
 
-                <canvas id="trendChart" height="120"></canvas>
+                <i class="bi bi-wallet2 display-5 opacity-50"></i>
+
             </div>
+
         </div>
 
-        <div class="col-xl-4">
-            <div class="glass p-4 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h5 class="mb-0">Savings Health</h5>
-                    <i class="bi bi-activity text-success fs-4"></i>
+    </div>
+
+
+
+    <!-- TOTAL EXPENSE -->
+
+    <div class="col-lg-3 col-md-6">
+
+        <div class="summary s2">
+
+            <div class="d-flex justify-content-between">
+
+                <div>
+
+                    <small class="text-uppercase opacity-75">
+
+                        Total Expense
+
+                    </small>
+
+                    <h3 class="fw-bold mt-2">
+
+                        ₹<?= number_format($total_expense,2) ?>
+
+                    </h3>
+
                 </div>
 
-                <div class="ring-wrap">
-                    <div class="ring" style="--p:<?php echo max(5,min(95,$savings_rate)); ?>;"></div>
+                <i class="bi bi-cash-stack display-5 opacity-50"></i>
 
-                    <div class="ring-center">
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- BALANCE -->
+
+    <div class="col-lg-3 col-md-6">
+
+        <div class="summary s3">
+
+            <div class="d-flex justify-content-between">
+
+                <div>
+
+                    <small class="text-uppercase opacity-75">
+
+                        Current Balance
+
+                    </small>
+
+                    <h3 class="fw-bold mt-2">
+
+                        ₹<?= number_format($current_balance,2) ?>
+
+                    </h3>
+
+                </div>
+
+                <i class="bi bi-piggy-bank display-5 opacity-50"></i>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- THIS MONTH -->
+
+    <div class="col-lg-3 col-md-6">
+
+        <div class="summary s4">
+
+            <div class="d-flex justify-content-between">
+
+                <div>
+
+                    <small class="text-uppercase opacity-75">
+
+                        This Month
+
+                    </small>
+
+                    <div class="small mt-2">
+
                         <div>
-                            <div class="small text-secondary">Retention</div>
-                            <div class="fs-2 fw-bold"><?php echo $savings_rate; ?>%</div>
+
+                            Income :
+                            <strong>
+
+                                ₹<?= number_format($this_month_income,2) ?>
+
+                            </strong>
+
                         </div>
+
+                        <div>
+
+                            Expense :
+                            <strong>
+
+                                ₹<?= number_format($this_month_expense,2) ?>
+
+                            </strong>
+
+                        </div>
+
                     </div>
+
                 </div>
 
-                <div class="text-center mt-4">
-                    <div class="text-secondary small">Target savings rate</div>
-                    <div class="fw-semibold fs-5">30%</div>
-                </div>
-            </div>
-        </div>
-    </div>
+                <i class="bi bi-calendar-month display-5 opacity-50"></i>
 
-    <!-- CATEGORY + INSIGHTS -->
-    <div class="row g-4 mb-4">
-
-        <div class="col-lg-5">
-            <div class="glass p-4 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
-                        <h5 class="mb-0">Expense Distribution</h5>
-                        <small class="text-secondary">Category-wise allocation</small>
-                    </div>
-                    <i class="bi bi-pie-chart text-info fs-4"></i>
-                </div>
-
-                <canvas id="pieChart" height="260"></canvas>
-            </div>
-        </div>
-
-        <div class="col-lg-7">
-            <div class="glass p-4 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
-                        <h5 class="mb-0">Smart Insights</h5>
-                        <small class="text-secondary">Automated observations</small>
-                    </div>
-                    <i class="bi bi-lightbulb text-warning fs-4"></i>
-                </div>
-
-                <div class="insight mb-3">
-                    <div class="fw-semibold">Top spending category</div>
-                    <div><?php echo htmlspecialchars($top_category); ?> — ₹ <?php echo number_format($top_amount,2); ?></div>
-                </div>
-
-                <div class="insight mb-3">
-                    <div class="fw-semibold">Savings performance</div>
-                    <div>
-                        <?php if($savings_rate >= 30): ?>
-                            Excellent! You saved <?php echo $savings_rate; ?>% of your income this month.
-                        <?php elseif($savings_rate >= 15): ?>
-                            Good progress. Consider reducing discretionary spending to improve savings.
-                        <?php else: ?>
-                            Savings are below the recommended 15%. Review recurring expenses.
-                        <?php endif; ?>
-                    </div>
-                </div>
-
-                <div class="insight">
-                    <div class="fw-semibold">Cash flow status</div>
-                    <div>
-                        <?php echo ($balance >= 0)
-                            ? 'Positive cash flow maintained throughout the month.'
-                            : 'Expenses exceeded income. Immediate budget review is recommended.'; ?>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- CATEGORY TABLE -->
-    <div class="glass p-4">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-            <div>
-                <h5 class="mb-0">Detailed Category Report</h5>
-                <small class="text-secondary">Sorted by highest spending</small>
             </div>
 
-            <span class="badge text-bg-primary"><?php echo count($category_rows); ?> categories</span>
         </div>
 
-        <div class="table-responsive">
-            <table class="table table-darkish table-hover align-middle" id="reportTable">
-                <thead>
-                    <tr>
-                        <th>Category</th>
-                        <th class="text-end">Amount (₹)</th>
-                        <th class="text-end">Share</th>
-                    </tr>
-                </thead>
-
-                <tbody>
-                <?php if(count($category_rows) > 0): ?>
-                    <?php foreach($category_rows as $row):
-                        $share = ($total_expense > 0) ? round(($row['total'] / $total_expense) * 100, 1) : 0;
-                    ?>
-                    <tr>
-                        <td class="fw-semibold"><?php echo htmlspecialchars($row['category_name']); ?></td>
-
-                        <td class="text-end text-danger fw-semibold">
-                            ₹ <?php echo number_format($row['total'],2); ?>
-                        </td>
-
-                        <td class="text-end">
-                            <span class="badge text-bg-info"><?php echo $share; ?>%</span>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                <?php else: ?>
-                    <tr>
-                        <td colspan="3" class="text-center py-5 text-secondary">
-                            <i class="bi bi-inbox fs-1 d-block mb-3"></i>
-                            No expenses found for this month.
-                        </td>
-                    </tr>
-                <?php endif; ?>
-                </tbody>
-
-                <tfoot>
-                    <tr>
-                        <th>Total</th>
-                        <th class="text-end">₹ <?php echo number_format($total_expense,2); ?></th>
-                        <th class="text-end">100%</th>
-                    </tr>
-                </tfoot>
-            </table>
-        </div>
     </div>
 
 </div>
-```
+<!-- =======================================
+            CHARTS SECTION
+======================================= -->
+
+<div class="row g-4 mb-4">
+
+    <!-- Expense by Category -->
+
+    <div class="col-lg-6">
+
+        <div class="card-glass chart-card">
+
+            <h4 class="fw-bold mb-4">
+
+                <i class="bi bi-pie-chart-fill text-warning me-2"></i>
+
+                Expense by Category
+
+            </h4>
+
+            <canvas id="categoryChart"></canvas>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- Monthly Expense -->
+
+    <div class="col-lg-6">
+
+        <div class="card-glass chart-card">
+
+            <h4 class="fw-bold mb-4">
+
+                <i class="bi bi-bar-chart-fill text-warning me-2"></i>
+
+                Monthly Expense
+
+            </h4>
+
+            <canvas id="monthlyChart"></canvas>
+
+        </div>
+
+    </div>
 
 </div>
+
+
 
 <script>
-// ===== TREND CHART =====
-new Chart(document.getElementById('trendChart'),{
-    type:'line',
-    data:{
-        labels:['Jan','Feb','Mar','Apr','May','Jun','Jul'],
-        datasets:[
-            {
-                label:'Income',
-                data:[42000,46000,45000,52000,50000,56000,<?php echo $total_income ?: 60000; ?>],
-                borderColor:'#22c55e',
-                backgroundColor:'rgba(34,197,94,.14)',
-                fill:true,
-                tension:.4,
-                pointRadius:4,
-                pointBackgroundColor:'#22c55e'
-            },
-            {
-                label:'Expenses',
-                data:[18000,22000,20000,25000,24000,27000,<?php echo $total_expense ?: 30000; ?>],
-                borderColor:'#ef4444',
-                backgroundColor:'rgba(239,68,68,.12)',
-                fill:true,
-                tension:.4,
-                pointRadius:4,
-                pointBackgroundColor:'#ef4444'
-            }
-        ]
-    },
-    options:{
-        responsive:true,
-        plugins:{
-            legend:{ labels:{ color:'#e5e7eb' } }
-        },
-        scales:{
-            x:{
-                ticks:{ color:'#c7d2fe' },
-                grid:{ color:'rgba(255,255,255,.06)' }
-            },
-            y:{
-                ticks:{ color:'#c7d2fe' },
-                grid:{ color:'rgba(255,255,255,.06)' }
-            }
-        }
-    }
-});
 
-// ===== PIE CHART =====
-new Chart(document.getElementById('pieChart'),{
-    type:'doughnut',
+// ================================
+// Expense Category Pie Chart
+// ================================
+
+const categoryCtx = document.getElementById('categoryChart');
+
+new Chart(categoryCtx,{
+
+    type:'pie',
+
     data:{
-        labels: <?php echo json_encode($labels); ?>,
+
+        labels:<?= json_encode($category_labels) ?>,
+
         datasets:[{
-            data: <?php echo json_encode($values); ?>,
+
+            data:<?= json_encode($category_amounts) ?>,
+
             backgroundColor:[
-                '#2563eb','#16a34a','#f59e0b','#dc2626',
-                '#7c3aed','#06b6d4','#ea580c','#059669'
+
+                '#ef4444',
+                '#3b82f6',
+                '#f59e0b',
+                '#10b981',
+                '#8b5cf6',
+                '#ec4899',
+                '#14b8a6',
+                '#64748b'
+
             ],
-            borderWidth:0
+
+            borderWidth:2,
+
+            borderColor:'#0b1020'
+
         }]
+
     },
+
     options:{
+
         responsive:true,
+
         plugins:{
+
             legend:{
+
                 position:'bottom',
-                labels:{ color:'#e5e7eb' }
+
+                labels:{
+
+                    color:'#ffffff',
+
+                    padding:20,
+
+                    font:{
+                        size:13
+                    }
+
+                }
+
             }
-        },
-        cutout:'68%'
+
+        }
+
     }
+
 });
 
-// ===== EXPORT CSV =====
-function exportCSV(){
-    let csv = [];
-    const rows = document.querySelectorAll('#reportTable tr');
 
-    rows.forEach(row => {
-        let cols = row.querySelectorAll('th,td');
-        let data = [];
 
-        cols.forEach(col => {
-            data.push('"'+col.innerText.replace(/"/g,'""')+'"');
-        });
 
-        csv.push(data.join(','));
-    });
+// ================================
+// Monthly Expense Bar Chart
+// ================================
 
-    const blob = new Blob([csv.join('\\n')], {type:'text/csv'});
-    const link = document.createElement('a');
+const monthlyCtx = document.getElementById('monthlyChart');
 
-    link.download = 'financial_report_<?php echo $selected_month; ?>.csv';
-    link.href = URL.createObjectURL(blob);
-    link.click();
-}
+new Chart(monthlyCtx,{
+
+    type:'bar',
+
+    data:{
+
+        labels:<?= json_encode($months) ?>,
+
+        datasets:[{
+
+            label:'Monthly Expense',
+
+            data:<?= json_encode($monthly_expense) ?>,
+
+            backgroundColor:'#f97316',
+
+            borderRadius:10,
+
+            borderSkipped:false
+
+        }]
+
+    },
+
+    options:{
+
+        responsive:true,
+
+        maintainAspectRatio:false,
+
+        plugins:{
+
+            legend:{
+
+                labels:{
+
+                    color:'#ffffff'
+
+                }
+
+            }
+
+        },
+
+        scales:{
+
+            x:{
+
+                ticks:{
+
+                    color:'#ffffff'
+
+                },
+
+                grid:{
+
+                    color:'rgba(255,255,255,.08)'
+
+                }
+
+            },
+
+            y:{
+
+                beginAtZero:true,
+
+                ticks:{
+
+                    color:'#ffffff'
+
+                },
+
+                grid:{
+
+                    color:'rgba(255,255,255,.08)'
+
+                }
+
+            }
+
+        }
+
+    }
+
+});
+
 </script>
+<!-- =======================================
+        RECENT TRANSACTIONS
+======================================= -->
+
+<div class="row g-4 mb-4">
+
+    <!-- Recent Income -->
+
+    <div class="col-lg-6">
+
+        <div class="card-glass p-4 h-100">
+
+            <h4 class="fw-bold mb-4">
+
+                <i class="bi bi-arrow-down-circle-fill text-success me-2"></i>
+
+                Recent Income
+
+            </h4>
+
+            <div class="table-responsive">
+
+                <table class="table table-dark table-hover align-middle">
+
+                    <thead>
+
+                        <tr>
+
+                            <th>Date</th>
+
+                            <th>Source</th>
+
+                            <th class="text-end">Amount</th>
+
+                        </tr>
+
+                    </thead>
+
+                    <tbody>
+
+                    <?php if($income_result->num_rows > 0): ?>
+
+                        <?php while($row = $income_result->fetch_assoc()): ?>
+
+                        <tr>
+
+                            <td>
+
+                                <?= date("d M Y", strtotime($row['income_date'])) ?>
+
+                            </td>
+
+                            <td>
+
+                                <?= htmlspecialchars($row['source']) ?>
+
+                            </td>
+
+                            <td class="text-end text-success fw-bold">
+
+                                ₹<?= number_format($row['amount'],2) ?>
+
+                            </td>
+
+                        </tr>
+
+                        <?php endwhile; ?>
+
+                    <?php else: ?>
+
+                        <tr>
+
+                            <td colspan="3" class="text-center text-secondary py-4">
+
+                                No income records found.
+
+                            </td>
+
+                        </tr>
+
+                    <?php endif; ?>
+
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- Recent Expense -->
+
+    <div class="col-lg-6">
+
+        <div class="card-glass p-4 h-100">
+
+            <h4 class="fw-bold mb-4">
+
+                <i class="bi bi-arrow-up-circle-fill text-danger me-2"></i>
+
+                Recent Expenses
+
+            </h4>
+
+            <div class="table-responsive">
+
+                <table class="table table-dark table-hover align-middle">
+
+                    <thead>
+
+                        <tr>
+
+                            <th>Date</th>
+
+                            <th>Category</th>
+
+                            <th>Description</th>
+
+                            <th class="text-end">Amount</th>
+
+                        </tr>
+
+                    </thead>
+
+                    <tbody>
+
+                    <?php if($expense_result->num_rows > 0): ?>
+
+                        <?php while($row = $expense_result->fetch_assoc()): ?>
+
+                        <tr>
+
+                            <td>
+
+                                <?= date("d M Y", strtotime($row['expense_date'])) ?>
+
+                            </td>
+
+                            <td>
+
+                                <?php
+
+                                $badge = "bg-secondary";
+
+                                switch($row['category']){
+
+                                    case "Food":
+                                        $badge = "bg-success";
+                                        break;
+
+                                    case "Transport":
+                                        $badge = "bg-primary";
+                                        break;
+
+                                    case "Shopping":
+                                        $badge = "bg-warning text-dark";
+                                        break;
+
+                                    case "Bills":
+                                        $badge = "bg-danger";
+                                        break;
+
+                                    case "Entertainment":
+                                        $badge = "bg-info text-dark";
+                                        break;
+
+                                    case "Education":
+                                        $badge = "bg-dark";
+                                        break;
+
+                                    case "Health":
+                                        $badge = "bg-success";
+                                        break;
+
+                                }
+
+                                ?>
+
+                                <span class="badge <?= $badge ?>">
+
+                                    <?= htmlspecialchars($row['category']) ?>
+
+                                </span>
+
+                            </td>
+
+                            <td>
+
+                                <?= !empty($row['description'])
+                                    ? htmlspecialchars($row['description'])
+                                    : '<span class="text-secondary">No description</span>'; ?>
+
+                            </td>
+
+                            <td class="text-end text-danger fw-bold">
+
+                                ₹<?= number_format($row['amount'],2) ?>
+
+                            </td>
+
+                        </tr>
+
+                        <?php endwhile; ?>
+
+                    <?php else: ?>
+
+                        <tr>
+
+                            <td colspan="4" class="text-center text-secondary py-4">
+
+                                No expense records found.
+
+                            </td>
+
+                        </tr>
+
+                    <?php endif; ?>
+
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+</div>
+
+<!-- =======================================
+                FOOTER
+======================================= -->
+
+<footer class="text-center text-secondary py-4 mt-5">
+
+    <hr class="border-secondary">
+
+    <p class="mb-0">
+
+        <i class="bi bi-graph-up-arrow text-warning"></i>
+
+        © <?= date('Y'); ?> <strong>Finora</strong> | Financial Reports Dashboard
+
+    </p>
+
+</footer>
+
+
+
+<!-- =======================================
+            BOOTSTRAP JS
+======================================= -->
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
+
+
+<!-- =======================================
+        AUTO REFRESH CHARTS ON RESIZE
+======================================= -->
+
+<script>
+
+window.addEventListener('resize', function () {
+
+    if (typeof Chart !== 'undefined') {
+
+        Chart.helpers.each(Chart.instances, function(instance) {
+            instance.resize();
+        });
+
+    }
+
+});
+
+</script>
+
+
+
+<!-- =======================================
+        PRINT REPORT
+======================================= -->
+
+<script>
+
+function printReport(){
+
+    window.print();
+
+}
+
+</script>
+
+
+
+<!-- =======================================
+        EXPORT TABLE TO CSV
+======================================= -->
+
+<script>
+
+function exportTableToCSV(filename) {
+
+    let csv = [];
+
+    let rows = document.querySelectorAll("table tr");
+
+    rows.forEach(function(row){
+
+        let cols = row.querySelectorAll("td, th");
+
+        let rowData = [];
+
+        cols.forEach(function(col){
+
+            rowData.push('"' + col.innerText.replace(/"/g,'""') + '"');
+
+        });
+
+        csv.push(rowData.join(","));
+
+    });
+
+    let csvFile = new Blob([csv.join("\n")], {type: "text/csv"});
+
+    let downloadLink = document.createElement("a");
+
+    downloadLink.download = filename;
+
+    downloadLink.href = window.URL.createObjectURL(csvFile);
+
+    downloadLink.style.display = "none";
+
+    document.body.appendChild(downloadLink);
+
+    downloadLink.click();
+
+}
+
+</script>
+
 </body>
+
 </html>

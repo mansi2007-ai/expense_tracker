@@ -2,7 +2,7 @@
 $host = "localhost";
 $user = "root";
 $pass = "";
-$dbname = "expense_tracker";
+$dbname = "finora_tracker";
 
 $conn = new mysqli($host, $user, $pass, $dbname);
 
