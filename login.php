@@ -43,7 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Login - ExpenseTracker</title>
+<title>Finora - Login </title>
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
@@ -325,13 +325,13 @@ body{
 <div class="login-shell">
     <div class="login-card">
 
-```
+
     <div class="brand">
         <div class="brand-badge">
             <i class="bi bi-wallet2"></i>
         </div>
         <div>
-            <h1>ExpenseTracker</h1>
+            <h1>Finora</h1>
             <p>Smart personal finance manager</p>
         </div>
     </div>
