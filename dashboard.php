@@ -475,15 +475,8 @@ margin-left:0;
 <div class="sidebar" id="sidebar">
 
 <div class="profile-box">
-
-<img
-src="uploads/profile/<?= htmlspecialchars($profile_image) ?>"
-alt="Profile">
-
-<h5><?= htmlspecialchars($fullname) ?></h5>
-
-<small><?= htmlspecialchars($email) ?></small>
-
+    <h2 class="app-title">FINORA</h2>
+    <p class="app-subtitle">Personal Expense Manager</p>
 </div>
 
 <div class="menu">
@@ -543,7 +536,7 @@ Logout
 
 <!-- ================= Topbar ================= -->
 
-<<div class="topbar">
+<div class="topbar">
 
     <!-- Left Side -->
     <div class="d-flex align-items-center gap-3">
