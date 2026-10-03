@@ -1,7 +1,7 @@
 :80 {
     root * /app
 
-    php_server
+    php_server /index.php
 
     file_server
 }
