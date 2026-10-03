@@ -1,7 +1,7 @@
-:80 {
+{$PORT} {
     root * /app
 
-    php_server /index.php
+    php_server
 
     file_server
 }
