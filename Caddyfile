@@ -1,0 +1,7 @@
+:80 {
+    root * /app
+
+    php_server
+
+    file_server
+}
